@@ -127,6 +127,13 @@ export const LayersIcon: React.FC<IconProps> = ({ className, size = 16, color = 
   </svg>
 )
 
+export const WardrobeIcon: React.FC<IconProps> = ({ className, size = 16, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <path d="M9 4.5c.7-1 1.7-1.5 3-1.5s2.3.5 3 1.5l4.5 2.8-2.2 4-2.3-1.1V21H9V10.2l-2.3 1.1-2.2-4L9 4.5z" />
+    <path d="M9 4.5c.8 1.2 1.8 1.8 3 1.8s2.2-.6 3-1.8" />
+  </svg>
+)
+
 export const CubeIcon: React.FC<IconProps> = ({ className, size = 16, color = 'currentColor', style }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
     <path d="M12 2l9 5-9 5-9-5 9-5zM3 7v10l9 5 9-5V7M12 12v10" />

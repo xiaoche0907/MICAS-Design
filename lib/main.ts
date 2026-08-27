@@ -25,8 +25,9 @@ const PANEL_SIZE = { width: 420, height: 820 }
 // Height includes enough room for MasterGo's native title bar plus the 50px toolbar.
 const IMAGE_MENU_SIZE = { width: 720, height: 94 }
 const OUTPAINT_SIZE = { width: 700, height: 720 }
+const TRY_ON_SIZE = { width: 760, height: 720 }
 const GENERATING_SIZE = { width: 320, height: 94 }
-let currentUiMode: 'panel' | 'image-menu' | 'outpaint' | 'generating' = 'panel'
+let currentUiMode: 'panel' | 'image-menu' | 'outpaint' | 'tryon' | 'generating' = 'panel'
 let panelPosition: { x: number; y: number } | null = null
 let anchoredImageNodeId: string | null = null
 let anchorTimer: ReturnType<typeof setInterval> | null = null
@@ -103,7 +104,7 @@ function startImageMenuTracking(node: any) {
   }, 80)
 }
 
-function setUiMode(mode: 'panel' | 'image-menu' | 'outpaint' | 'generating') {
+function setUiMode(mode: 'panel' | 'image-menu' | 'outpaint' | 'tryon' | 'generating') {
   if (mode === 'panel') {
     stopImageMenuTracking()
     mg.ui.resize(PANEL_SIZE.width, PANEL_SIZE.height)
@@ -120,6 +121,17 @@ function setUiMode(mode: 'panel' | 'image-menu' | 'outpaint' | 'generating') {
     const y = canvas.y + Math.max(8, (canvas.height - OUTPAINT_SIZE.height) / 2)
     mg.ui.moveTo(Math.round(x), Math.round(y))
     currentUiMode = 'outpaint'
+    return
+  }
+
+  if (mode === 'tryon') {
+    stopImageMenuTracking()
+    mg.ui.resize(TRY_ON_SIZE.width, TRY_ON_SIZE.height)
+    const canvas = mg.viewport.positionOnDom
+    const x = canvas.x + Math.max(8, (canvas.width - TRY_ON_SIZE.width) / 2)
+    const y = canvas.y + Math.max(8, (canvas.height - TRY_ON_SIZE.height) / 2)
+    mg.ui.moveTo(Math.round(x), Math.round(y))
+    currentUiMode = 'tryon'
     return
   }
 

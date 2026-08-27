@@ -70,7 +70,7 @@ export interface ExportSelectionImagePayload {
 }
 
 export interface SetUiModePayload {
-  mode: 'panel' | 'image-menu' | 'outpaint' | 'generating'
+  mode: 'panel' | 'image-menu' | 'outpaint' | 'tryon' | 'generating'
   anchor?: { x: number; y: number }
 }
 

@@ -34,6 +34,7 @@ import { ApiSettingsModal } from './components/ApiSettingsModal'
 import { ResultViewer } from './components/ResultViewer'
 import { Toast } from './components/Toast'
 import { OutpaintEditor, OutpaintPayload } from './components/OutpaintEditor'
+import { TryOnEditor, TryOnPayload } from './components/TryOnEditor'
 import {
   ImageIcon,
   ScissorsIcon,
@@ -49,7 +50,7 @@ import {
   GridIcon,
   UpscaleIcon,
   RemoveBackgroundIcon,
-  LayersIcon,
+  WardrobeIcon,
   CubeIcon,
   ExpandIcon,
   MoreIcon,
@@ -443,6 +444,10 @@ export default function App() {
   const [outpaintJobState, setOutpaintJobState] = useState<'idle' | 'running' | 'success'>('idle')
   const [outpaintJobModel, setOutpaintJobModel] = useState('Image 2 · 2K')
   const [isOutpaintMinimized, setIsOutpaintMinimized] = useState(false)
+  const [tryOnSource, setTryOnSource] = useState<ReferenceImage | null>(null)
+  const [tryOnJobState, setTryOnJobState] = useState<'idle' | 'running' | 'success'>('idle')
+  const [tryOnJobModel, setTryOnJobModel] = useState('Nanobanana 2 · 2K')
+  const [isTryOnMinimized, setIsTryOnMinimized] = useState(false)
   const [toast, setToast] = useState<{
     message: string
     type?: 'success' | 'error' | 'warning' | 'info'
@@ -480,6 +485,7 @@ export default function App() {
           if (backgroundUiModeRef.current) {
             setQuickSelection(null)
             setIsOutpaintMinimized(true)
+            setIsTryOnMinimized(true)
             sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
             break
           }
@@ -719,6 +725,30 @@ export default function App() {
         height: image.height,
       })
       sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'outpaint' } })
+      return
+    }
+
+    if (pendingAction?.kind === 'try-on') {
+      if (exportedImages.length !== 1) {
+        setToast({ message: '万物上身每次仅支持一张人物底图', type: 'warning' })
+        return
+      }
+      const image = exportedImages[0]
+      setQuickSelection(null)
+      setTryOnSource({
+        id: `tryon-source-${image.id}`,
+        role: 'model',
+        source: 'mastergo',
+        name: image.name,
+        mimeType: image.mimeType,
+        bytes: image.bytes,
+        previewUrl: uint8ArrayToDataUrl(image.bytes, image.mimeType),
+        width: image.width,
+        height: image.height,
+      })
+      setTryOnJobState('idle')
+      setIsTryOnMinimized(false)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'tryon' } })
       return
     }
 
@@ -1129,6 +1159,87 @@ export default function App() {
     }
   }
 
+  const handleTryOnGenerate = async ({
+    references: tryOnReferences,
+    prompt: tryOnPrompt,
+    aspectRatio: tryOnRatio,
+    modelId: tryOnModelId,
+    resolution: tryOnResolution,
+  }: TryOnPayload) => {
+    if (!apiProfile || !apiProfile.apiKey) {
+      setTryOnSource(null)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
+      setSettingsInitialSection('models')
+      setIsSettingsOpen(true)
+      setToast({ message: '请先配置 API Key 后再使用万物上身', type: 'warning' })
+      return
+    }
+
+    isGeneratingRef.current = true
+    awaitingAutomaticInsertRef.current = false
+    backgroundUiModeRef.current = true
+    setIsGenerating(true)
+    setTryOnJobState('running')
+    setTryOnJobModel(`${tryOnModelId === 'gpt-image-2' ? 'Image 2' : 'Nanobanana 2'} · ${tryOnResolution}`)
+    setIsTryOnMinimized(true)
+    sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+    setGenTimer(0)
+    const timerInterval = setInterval(() => setGenTimer((value) => value + 1), 1000)
+    setToast({ message: '万物上身已转入后台生成，可继续操作画布', type: 'info' })
+
+    const tryOnModel = availableModels.find((model) => model.id === tryOnModelId)
+      || getModelById(tryOnModelId)
+    const request: GenerationRequest = {
+      intent: 'edit',
+      prompt: tryOnPrompt,
+      model: tryOnModel,
+      references: tryOnReferences,
+      aspectRatio: tryOnRatio,
+      resolution: tryOnResolution,
+      outputCount: 1,
+      parameters: { operation: 'virtual-try-on', preserveIdentity: true, preservePose: true },
+    }
+
+    try {
+      const job = await generationEngine.generate(request, apiProfile)
+      if (job.status !== 'completed' || !job.results?.length) {
+        backgroundUiModeRef.current = false
+        setTryOnJobState('idle')
+        setIsTryOnMinimized(false)
+        sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'tryon' } })
+        setToast({ message: job.error?.message || '万物上身生成失败', type: 'error' })
+        return
+      }
+
+      const completedResults = job.results.map((image) => ({
+        ...image,
+        prompt: `[万物上身] ${tryOnPrompt}`,
+      }))
+      setResults((previous) => {
+        const nextResults = [...completedResults, ...previous].slice(0, 20)
+        persistGenerationHistory(nextResults)
+        return nextResults
+      })
+      setIsHistoryOpen(true)
+      await insertGeneratedImages(completedResults, true)
+      setTryOnSource(null)
+      setTryOnJobState('success')
+      setIsTryOnMinimized(true)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+      setToast({ message: '换装图片已生成并自动插入画布', type: 'success' })
+    } catch (error: any) {
+      backgroundUiModeRef.current = false
+      setTryOnJobState('idle')
+      setIsTryOnMinimized(false)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'tryon' } })
+      setToast({ message: `万物上身异常：${error?.message || error}`, type: 'error' })
+    } finally {
+      clearInterval(timerInterval)
+      isGeneratingRef.current = false
+      setIsGenerating(false)
+    }
+  }
+
   // 插回画布
   const handleInsertToCanvas = async (img: GeneratedImage) => {
     await insertGeneratedImages([img])
@@ -1199,6 +1310,34 @@ export default function App() {
     )
   }
 
+  if (tryOnJobState !== 'idle' && isTryOnMinimized) {
+    const completed = tryOnJobState === 'success'
+    return (
+      <div className={`generation-mini ${completed ? 'success' : ''}`}>
+        <span className="generation-mini-icon">{completed ? '✓' : <span className="generation-mini-spinner" />}</span>
+        <span className="generation-mini-copy">
+          <strong>{completed ? '换装已完成' : '万物上身生成中'}</strong>
+          <small>{completed ? '已自动插入画布' : `${tryOnJobModel} · ${genTimer}s`}</small>
+        </span>
+        <button
+          onClick={() => {
+            if (completed) {
+              backgroundUiModeRef.current = false
+              setTryOnJobState('idle')
+              setIsTryOnMinimized(false)
+              sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
+              return
+            }
+            setIsTryOnMinimized(false)
+            sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'tryon' } })
+          }}
+        >
+          {completed ? '打开面板' : '展开'}
+        </button>
+      </div>
+    )
+  }
+
   if (outpaintSource) {
     return (
       <>
@@ -1225,6 +1364,30 @@ export default function App() {
     )
   }
 
+  if (tryOnSource) {
+    return (
+      <>
+        <TryOnEditor
+          source={tryOnSource}
+          isGenerating={isGenerating}
+          onCancel={() => {
+            backgroundUiModeRef.current = false
+            setTryOnJobState('idle')
+            setIsTryOnMinimized(false)
+            setTryOnSource(null)
+            sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
+          }}
+          onMinimize={() => {
+            setIsTryOnMinimized(true)
+            sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+          }}
+          onGenerate={handleTryOnGenerate}
+        />
+        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      </>
+    )
+  }
+
   const quickImageMenu = quickSelection ? (
       <div className="image-context-menu" role="toolbar" aria-label={`图片快捷操作：${quickSelection.name}`}>
         <div className="image-context-list">
@@ -1234,7 +1397,7 @@ export default function App() {
           <button onClick={() => runQuickImageAction('upscale', '高清放大当前图片，增强材质与细节，保持原始构图和内容不变')}><span><UpscaleIcon size={15} /></span>放大</button>
           <button onClick={() => runQuickImageAction('outpaint')}><span><ExpandIcon size={15} /></span>智能扩图</button>
           <button onClick={() => runQuickImageAction('remove-bg', '移除背景，精准保留人物或商品边缘，输出干净的透明背景 PNG')}><span><RemoveBackgroundIcon size={15} /></span>去背景</button>
-          <button onClick={() => runQuickImageAction('replace', '保持当前场景、模特姿势和光影，将图中商品替换为新的参考商品')}><span><LayersIcon size={15} /></span>产品替换</button>
+          <button onClick={() => runQuickImageAction('try-on')}><span><WardrobeIcon size={15} /></span>万物上身</button>
           <button onClick={() => runQuickImageAction('angles', '基于当前人物或商品生成不同拍摄角度，保持主体、服装与场景一致')}><span><CubeIcon size={15} /></span>多角度</button>
           <button onClick={() => runQuickImageAction('adjust', '优化选中图片的色彩、光影、对比度与商业质感，保持内容不变')}><span><SlidersIcon size={15} /></span>画面调整</button>
           <button className="image-context-panel" onClick={openFullPanel} title="打开 MICAS 主面板"><span><MoreIcon size={16} /></span>主面板</button>

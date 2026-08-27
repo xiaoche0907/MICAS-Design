@@ -2679,6 +2679,212 @@ body {
 .outpaint-actions button:disabled { opacity: 0.5; cursor: wait; }
 .outpaint-minimize-glyph { font-size: 17px; line-height: 1; transform: translateY(-2px); }
 
+/* AI virtual try-on / wardrobe editor */
+.tryon-editor {
+  width: 100%;
+  height: 100vh;
+  color: #171717;
+  background: #F3F3F3;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  overflow: hidden;
+}
+.tryon-header small { letter-spacing: 0.01em; }
+.tryon-body {
+  height: calc(100vh - 54px);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 292px minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+.tryon-source-panel,
+.tryon-controls {
+  min-width: 0;
+  min-height: 0;
+  background: #FFFFFF;
+  border: 1px solid #DDDDDD;
+  border-radius: 12px;
+}
+.tryon-source-panel {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tryon-step {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.tryon-step b {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFFFFF;
+  background: #171717;
+  border-radius: 7px;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
+.tryon-step span { font-size: 12px; font-weight: 750; }
+.tryon-step em { margin-left: auto; color: #777777; font-size: 9px; font-style: normal; }
+.tryon-source-image {
+  min-height: 0;
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ECECEC;
+  border: 1px solid #D7D7D7;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.tryon-source-image::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(45deg, rgba(0,0,0,.035) 25%, transparent 25%), linear-gradient(-45deg, rgba(0,0,0,.035) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(0,0,0,.035) 75%), linear-gradient(-45deg, transparent 75%, rgba(0,0,0,.035) 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+.tryon-source-image img { position: relative; z-index: 1; width: 100%; height: 100%; display: block; object-fit: contain; }
+.tryon-source-image span {
+  position: absolute;
+  z-index: 2;
+  left: 9px;
+  bottom: 9px;
+  padding: 4px 7px;
+  color: #FFFFFF;
+  background: rgba(17, 17, 17, 0.82);
+  border-radius: 6px;
+  font-size: 9px;
+}
+.tryon-source-tip {
+  padding: 9px;
+  color: #666666;
+  background: #F5F5F5;
+  border-radius: 8px;
+  font-size: 9px;
+  line-height: 1.5;
+}
+.tryon-controls {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  overflow-y: auto;
+}
+.tryon-category-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.tryon-category {
+  min-width: 0;
+  padding: 8px;
+  background: #FAFAFA;
+  border: 1px solid #E2E2E2;
+  border-radius: 9px;
+  transition: border-color .15s ease, background .15s ease;
+}
+.tryon-category.dragging { background: #F0F0F0; border-color: #1C1C1C; }
+.tryon-category-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+.tryon-category-head > span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.tryon-category-head strong { font-size: 10px; }
+.tryon-category-head small { overflow: hidden; color: #888888; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.tryon-category-mark {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFFFFF;
+  background: #1B1B1B;
+  border-radius: 6px;
+  font-size: 8px;
+  font-weight: 800;
+}
+.tryon-thumbs { display: flex; align-items: center; gap: 5px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tryon-thumbs::-webkit-scrollbar { display: none; }
+.tryon-thumb { flex: 0 0 42px; width: 42px; height: 42px; position: relative; background: #FFFFFF; border: 1px solid #D7D7D7; border-radius: 7px; overflow: hidden; }
+.tryon-thumb img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.tryon-thumb button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFFFFF;
+  background: rgba(0,0,0,.78);
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.tryon-add {
+  min-width: 74px;
+  height: 42px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #555555;
+  background: #FFFFFF;
+  border: 1px dashed #AFAFAF;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tryon-add:hover { color: #111111; border-color: #111111; }
+.tryon-add:disabled { opacity: .42; cursor: not-allowed; }
+.tryon-label { color: #666666; font-size: 9px; }
+.tryon-controls textarea,
+.tryon-controls select {
+  width: 100%;
+  color: #222222;
+  background: #F5F5F5;
+  border: 1px solid #E1E1E1;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 9px;
+  outline: none;
+}
+.tryon-controls textarea { min-height: 52px; padding: 8px; line-height: 1.45; resize: vertical; }
+.tryon-settings-row label { display: flex; align-items: center; gap: 9px; }
+.tryon-settings-row label > span { flex: 0 0 50px; color: #666666; font-size: 9px; }
+.tryon-controls select { height: 30px; padding: 0 8px; }
+.tryon-models { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tryon-actions {
+  margin-top: auto;
+  padding-top: 3px;
+  display: grid;
+  grid-template-columns: auto 64px minmax(140px, 1fr);
+  gap: 7px;
+}
+.tryon-actions button {
+  height: 36px;
+  padding: 0 10px;
+  color: #333333;
+  background: #FFFFFF;
+  border: 1px solid #DCDCDC;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tryon-actions button.primary { color: #FFFFFF; background: #202020; border-color: #202020; }
+.tryon-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.tryon-actions .tryon-clear { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+
 .generation-mini {
   width: 100%;
   height: 56px;
