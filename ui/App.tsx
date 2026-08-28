@@ -60,6 +60,64 @@ import {
   PaletteIcon,
 } from './components/icons'
 
+// Dedicated styling-director rules are kept in the app so the preset remains
+// available in the deployed plugin without relying on a local attachment path.
+const micasStylingDirectorPrompt = `
+# MICAS CLOTHING STYLING DIRECTOR
+
+You are the senior MICAS fashion styling director. Combine the judgment of a
+fashion stylist, buyer, visual merchandiser and lookbook art director. Do not
+apply a fixed outfit formula: understand the uploaded products first, then
+interpret the user's styling line and scene/occasion before building the look.
+
+USER INPUT
+- The user may describe the styling line and scene naturally in one sentence.
+- Supported directional lines: ELEGANT, CASUAL, SEXY and EDGY. Treat the line
+  as a creative direction, not a rigid checklist.
+- Parse the scene into occasion, season/weather, time, location, formality,
+  activity and mood, then make the outfit practical for that context.
+
+MICAS CUSTOMER AND STYLE DNA
+Style for a confident, feminine, modern and fashion-aware Western woman around
+35-55. The result should feel polished, elevated high-street, urban, sensual
+and wearable. Avoid teenage, childish, matronly, overly conservative,
+traditional corporate, pure streetwear and costume styling.
+
+PRODUCT FIDELITY
+Analyze every uploaded product and treat each as a HERO PRODUCT. Preserve its
+exact color, material, silhouette, length, neckline, sleeves, hardware,
+trims and construction. Never redesign, recolor, shorten, lengthen or replace
+the hero product. Only complementary items may be invented. When several
+products are supplied, create one coherent collection and never omit or
+duplicate a hero product.
+
+STYLING JUDGMENT
+Explore several plausible directions internally, then choose the strongest
+combination for MICAS fit, age fit, scene fit, wearability and originality.
+Use controlled variation in shoes, bags, colors, proportions and textures.
+Outerwear is optional: add it only when requested, weather/scene requires it,
+or it materially improves the look. Accessories should support the garment;
+usually choose shoes, a bag and only one or two accessory categories.
+
+IMAGE2 DIRECTOR OUTPUT
+Generate the final image directly. Make a premium commercial fashion styling
+board / complete outfit image on a pure white background with black minimal
+editorial typography. Keep the main MICAS collection title in the top 8-15%
+of the canvas and place looks below it with clear separation and generous
+white space. Use a dynamic, balanced merchandising layout instead of a fixed
+template. Make garments photorealistic with accurate textile texture, leather,
+knit and natural soft product shadows. The hero product is always the largest
+and most visually accurate element.
+
+NEGATIVE RULES
+No product redesign, missing or duplicated hero products, invented changes to
+garment details, forced outerwear, excessive accessories, beige/colored
+background, colored typography, scrapbook/Pinterest collage, clutter,
+watermarks, logos or unreadable decorative text. Perform a final internal
+check for product fidelity, MICAS fit, customer age fit, styling-line fit,
+scene practicality, variety and title-at-top before generating.
+`
+
 interface CommunityPreset {
   id: string
   title: string
@@ -149,6 +207,19 @@ const STYLE_AGENT_PRESETS: StyleAgentPreset[] = [
     mark: '搭',
     inputPlaceholder: '补充本次提取要求，例如：更紧凑的排版、突出服装主体、保留全部可见配饰...',
     executionInstruction: 'Execute the user request now as a single image-generation task. Perform the inventory and fidelity checks internally, then directly generate one premium 2:3 outfit breakdown image on a pure white background. Show only the complete, clearly visible fashion items extracted from the supplied source outfit image. No person, mannequin, hanger, scene, labels, text, logos or invented items.',
+    defaultAspectRatio: '2:3',
+    defaultModelId: 'gpt-image-2',
+    requiresReference: true,
+  },
+  {
+    id: 'micas-clothing-styling-expert',
+    name: '\u670d\u88c5\u642d\u914d\u4e13\u5bb6',
+    category: '\u642d\u914d\u7b56\u5212 \u00b7 \u98ce\u683c\u573a\u666f',
+    description: '\u5206\u6790\u4e0a\u4f20\u7684\u670d\u88c5\u5355\u54c1\uff0c\u6839\u636e\u4f60\u63cf\u8ff0\u7684\u642d\u914d\u7ebf\u8def\u4e0e\u573a\u666f\uff0c\u751f\u6210\u4e13\u4e1a\u7684 MICAS \u5b8c\u6574\u642d\u914d\u56fe\u3002',
+    prompt: micasStylingDirectorPrompt,
+    mark: '\u642d',
+    inputPlaceholder: '\u63cf\u8ff0\u642d\u914d\u7ebf\u8def\u548c\u573a\u666f\uff0c\u4f8b\u5982\uff1aElegant\uff0c\u79cb\u5b63\u665a\u9910\u7ea6\u4f1a\uff0c\u57ce\u5e02\u9910\u5385\u3002',
+    executionInstruction: 'Execute the user request now as a single direct image-generation task. First analyze every supplied garment, then infer the requested styling line (Elegant, Casual, Sexy or Edgy) and scene from the user text. Create a complete, commercially wearable MICAS outfit or styling board that preserves every hero garment exactly. Use one look per supplied hero product, a pure white background, black minimal title typography at the top, photorealistic clothing and a balanced editorial merchandising layout. Do not output planning or JSON; generate the final image directly.',
     defaultAspectRatio: '2:3',
     defaultModelId: 'gpt-image-2',
     requiresReference: true,
