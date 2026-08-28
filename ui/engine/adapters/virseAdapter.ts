@@ -7,7 +7,13 @@ import {
 } from '../types'
 import { ApiProfile } from '@messages/sender'
 import { composePromptWithRoles } from '../promptComposer'
-import { uploadToImgBB } from '../../utils/imgbb'
+import {
+  getImageHostApiKey,
+  getImageHostCredentialLabel,
+  getImageHostDisplayName,
+  getImageHostProvider,
+  uploadToImageHost,
+} from '../../utils/imgbb'
 import { matchProviderModels, ProviderModel } from '../modelRegistry'
 
 const VIRSE_PROTOCOL_VERSION = '2025-03-26'
@@ -437,12 +443,23 @@ export class VirseAdapter implements ImageProviderAdapter {
       if (!spaceId || !canvasId) throw new Error('请先测试连接并选择 Virse 工作区/画布')
 
       const assetIds: string[] = []
+      const imageHostProvider = getImageHostProvider(profile)
+      const imageHostApiKey = getImageHostApiKey(profile)
       for (let index = 0; index < request.references.length; index += 1) {
         const reference = request.references[index]
         let imageUrl = reference.previewUrl
         if (!/^https:\/\//i.test(imageUrl)) {
-          if (!profile.imgbbApiKey) throw new Error('使用 Virse 参考图时必须填写 ImgBB API Key')
-          imageUrl = await uploadToImgBB(imageUrl, profile.imgbbApiKey, reference.name)
+          if (!imageHostApiKey) {
+            throw new Error(
+              `使用 Virse 参考图时必须填写 ${getImageHostDisplayName(imageHostProvider)} ${getImageHostCredentialLabel(imageHostProvider)}`
+            )
+          }
+          imageUrl = await uploadToImageHost(
+            imageUrl,
+            imageHostProvider,
+            imageHostApiKey,
+            reference.name
+          )
         }
         const uploaded = await this.callTool(profile, 'upload_image', {
           image_url: imageUrl,

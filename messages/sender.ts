@@ -23,7 +23,11 @@ export interface ApiProfile {
   apiKey: string
   defaultModelId?: string
   protocol?: 'openai-image' | 'openai-chat' | 'gemini' | 'virse' | 'custom'
+  /** 当前图床；缺省时保持向后兼容并使用 ImgBB。 */
+  imageHostProvider?: 'imgbb' | 'uploadcare' | 'freeimage'
   imgbbApiKey?: string
+  uploadcarePublicKey?: string
+  freeimageApiKey?: string
   workspaceId?: string
   /** HTTPS endpoint of the Virse MCP relay, for example https://example.com/api/virse. */
   virseRelayUrl?: string
@@ -46,6 +50,7 @@ export interface ExportedImagePayload {
 
 export interface InsertImagePayload {
   bytes?: Uint8Array
+  mimeType?: string
   sourceUrl?: string
   proxyUrl?: string
   width?: number

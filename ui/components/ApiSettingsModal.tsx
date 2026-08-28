@@ -3,6 +3,12 @@ import { ApiProfile } from '@messages/sender'
 import { generationEngine } from '../engine/generationEngine'
 import { DEFAULT_SELECTION_SHORTCUT, formatShortcut, shortcutFromKeyboardEvent } from '../utils/shortcut'
 import {
+  ImageHostProvider,
+  getImageHostCredentialLabel,
+  getImageHostDisplayName,
+  testImageHostConnection,
+} from '../utils/imgbb'
+import {
   DEFAULT_MODEL_ID,
   PRESET_MODELS,
   matchProviderModels,
@@ -53,12 +59,17 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
   const [showAgentKey, setShowAgentKey] = useState(false)
   const [defaultModelId, setDefaultModelId] = useState(DEFAULT_MODEL_ID)
   const [modelIdMap, setModelIdMap] = useState<Record<string, string>>({})
+  const [imageHostProvider, setImageHostProvider] = useState<ImageHostProvider>('imgbb')
   const [imgbbApiKey, setImgbbApiKey] = useState('')
+  const [uploadcarePublicKey, setUploadcarePublicKey] = useState('')
+  const [freeimageApiKey, setFreeimageApiKey] = useState('')
   const [showImgBbKey, setShowImgBbKey] = useState(false)
   const [workspaceId, setWorkspaceId] = useState('')
   const [workspacesList, setWorkspacesList] = useState<Array<{ id: string; name: string }>>([])
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [testingImgBb, setTestingImgBb] = useState(false)
+  const [imgbbTestResult, setImgBbTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [shortcutDraft, setShortcutDraft] = useState(selectionShortcut)
 
   useEffect(() => {
@@ -68,6 +79,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     setShowAgentKey(false)
     setShowImgBbKey(false)
     setTestResult(null)
+    setImgBbTestResult(null)
     setShortcutDraft(selectionShortcut)
 
     if (!initialProfile) {
@@ -79,7 +91,10 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
       setAgentApiKey('')
       setDefaultModelId(DEFAULT_MODEL_ID)
       setModelIdMap({})
+      setImageHostProvider('imgbb')
       setImgbbApiKey('')
+      setUploadcarePublicKey('')
+      setFreeimageApiKey('')
       setWorkspaceId('')
       setWorkspacesList([])
       return
@@ -107,7 +122,14 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     )
     setDefaultModelId(initialProfile.defaultModelId || DEFAULT_MODEL_ID)
     setModelIdMap(initialProfile.modelIdMap || {})
+    setImageHostProvider(
+      initialProfile.imageHostProvider === 'uploadcare' || initialProfile.imageHostProvider === 'freeimage'
+        ? initialProfile.imageHostProvider
+        : 'imgbb'
+    )
     setImgbbApiKey(initialProfile.imgbbApiKey || '')
+    setUploadcarePublicKey(initialProfile.uploadcarePublicKey || '')
+    setFreeimageApiKey(initialProfile.freeimageApiKey || '')
     setWorkspaceId(initialProfile.workspaceId || '')
     setWorkspacesList([])
   }, [initialProfile, initialSection, isOpen, selectionShortcut])
@@ -121,7 +143,10 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     baseUrl: baseUrl.trim(),
     apiKey: apiKey.trim(),
     defaultModelId,
+    imageHostProvider,
     imgbbApiKey: imgbbApiKey.trim(),
+    uploadcarePublicKey: uploadcarePublicKey.trim(),
+    freeimageApiKey: freeimageApiKey.trim(),
     workspaceId,
     virseRelayUrl: provider === 'virse' ? virseRelayUrl.trim() : undefined,
     modelIdMap: provider === 'virse' ? modelIdMap : undefined,
@@ -170,6 +195,35 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
       setTestResult({ success: false, message: error?.message || String(error) })
     } finally {
       setTesting(false)
+    }
+  }
+
+  const handleTestImgBbConnection = async () => {
+    setTestingImgBb(true)
+    setImgBbTestResult(null)
+    try {
+      const currentApiKey = imageHostProvider === 'uploadcare'
+        ? uploadcarePublicKey
+        : imageHostProvider === 'freeimage'
+          ? freeimageApiKey
+          : imgbbApiKey
+      await testImageHostConnection(imageHostProvider, currentApiKey)
+      setImgBbTestResult({
+        success: true,
+        message: imageHostProvider === 'imgbb'
+          ? 'ImgBB 连接成功，测试图片将在 60 秒后自动删除。'
+          : imageHostProvider === 'freeimage'
+            ? 'Freeimage.host 连接成功。'
+            : 'Uploadcare 连接成功，测试图片将按临时文件处理。',
+      })
+    } catch (error: any) {
+      const message = error?.message || String(error)
+      const hint = /failed to fetch|networkerror/i.test(message)
+        ? `无法连接 ${getImageHostDisplayName(imageHostProvider)}，请检查网络。`
+        : message
+      setImgBbTestResult({ success: false, message: hint })
+    } finally {
+      setTestingImgBb(false)
     }
   }
 
@@ -375,25 +429,124 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                 <span>本地参考图的公网托管与 Virse 画布导入配置</span>
               </div>
 
-              <div className="v2-image-host-card">
-                <div className="v2-image-host-badge">ImgBB</div>
-                <div>
-                  <strong>ImgBB 图床</strong>
-                  <span>用于把 MasterGo 本地参考图转换为 HTTPS 公网地址</span>
-                </div>
+              <div className="v2-image-host-options" role="radiogroup" aria-label="选择图床服务">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={imageHostProvider === 'imgbb'}
+                  className={`v2-image-host-card ${imageHostProvider === 'imgbb' ? 'active' : ''}`}
+                  onClick={() => {
+                    setImageHostProvider('imgbb')
+                    setShowImgBbKey(false)
+                    setImgBbTestResult(null)
+                  }}
+                >
+                  <div className="v2-image-host-badge">ImgBB</div>
+                  <div>
+                    <strong>ImgBB 图床（默认）</strong>
+                    <span>通过 Vercel HTTPS 中转上传</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={imageHostProvider === 'uploadcare'}
+                  className={`v2-image-host-card ${imageHostProvider === 'uploadcare' ? 'active' : ''}`}
+                  onClick={() => {
+                    setImageHostProvider('uploadcare')
+                    setShowImgBbKey(false)
+                    setImgBbTestResult(null)
+                  }}
+                >
+                  <div className="v2-image-host-badge uploadcare">UC</div>
+                  <div>
+                    <strong>Uploadcare</strong>
+                    <span>可直连 MasterGo，无需中转</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={imageHostProvider === 'freeimage'}
+                  className={`v2-image-host-card ${imageHostProvider === 'freeimage' ? 'active' : ''}`}
+                  onClick={() => {
+                    setImageHostProvider('freeimage')
+                    setShowImgBbKey(false)
+                    setImgBbTestResult(null)
+                  }}
+                >
+                  <div className="v2-image-host-badge freeimage">Free</div>
+                  <div>
+                    <strong>Freeimage.host</strong>
+                    <span>通过 XC-AI HTTPS 中转上传</span>
+                  </div>
+                </button>
               </div>
 
               <div className="v2-form-group">
-                <label className="v2-form-label">ImgBB API Key</label>
+                <label className="v2-form-label">
+                  {getImageHostDisplayName(imageHostProvider)} {getImageHostCredentialLabel(imageHostProvider)}
+                </label>
                 {renderPasswordInput(
-                  imgbbApiKey,
-                  setImgbbApiKey,
+                  imageHostProvider === 'uploadcare'
+                    ? uploadcarePublicKey
+                    : imageHostProvider === 'freeimage'
+                      ? freeimageApiKey
+                      : imgbbApiKey,
+                  (value) => {
+                    if (imageHostProvider === 'uploadcare') setUploadcarePublicKey(value)
+                    else if (imageHostProvider === 'freeimage') setFreeimageApiKey(value)
+                    else setImgbbApiKey(value)
+                    setImgBbTestResult(null)
+                  },
                   showImgBbKey,
                   () => setShowImgBbKey(!showImgBbKey),
                   '使用本地参考图时填写'
                 )}
-                <span className="v2-form-tip">Virse 会先上传 ImgBB，再通过 MCP upload_image 导入所选工作区/画布。</span>
+                <span className="v2-form-tip">
+                  {imageHostProvider === 'uploadcare'
+                    ? 'Uploadcare 使用 Public Key 从插件 UI 直传，不需要 Secret Key 或中转服务。'
+                    : imageHostProvider === 'freeimage'
+                      ? 'Freeimage.host 通过 Vercel HTTPS 中转上传，插件无需单独部署后端。'
+                      : 'ImgBB 优先通过 XC-AI HTTPS 中转；若中转出口被拒绝，会自动恢复为官方 FormData 直传。'}
+                </span>
+                <a
+                  className="v2-key-link"
+                  href={imageHostProvider === 'uploadcare'
+                    ? 'https://app.uploadcare.com/'
+                    : imageHostProvider === 'freeimage'
+                      ? 'https://freeimage.host/api'
+                      : 'https://api.imgbb.com/'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  获取 {getImageHostDisplayName(imageHostProvider)} {getImageHostCredentialLabel(imageHostProvider)} <span aria-hidden="true">↗</span>
+                </a>
               </div>
+
+              {imgbbTestResult && (
+                <div className={`v2-test-box ${imgbbTestResult.success ? 'success' : 'error'}`}>
+                  <span className="v2-test-status-icon">
+                    {imgbbTestResult.success
+                      ? <CheckIcon size={15} color="#34D399" />
+                      : <AlertIcon size={15} color="#F87171" />}
+                  </span>
+                  <span className="v2-test-status-text">{imgbbTestResult.message}</span>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="v2-test-btn"
+                disabled={testingImgBb}
+                onClick={handleTestImgBbConnection}
+              >
+                {testingImgBb ? (
+                  <><div className="v2-spinner-ring" style={{ width: 14, height: 14, borderWidth: 2 }} /><span>正在测试图床连接...</span></>
+                ) : (
+                  <><SparklesIcon size={14} color="#FFFFFF" /><span>测试 {getImageHostDisplayName(imageHostProvider)} 连接</span></>
+                )}
+              </button>
 
               <div className="v2-inline-notice">纯文字生图不需要图床；只有本地参考图或 MasterGo 图层参与生成时才需要。</div>
             </div>
