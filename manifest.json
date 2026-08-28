@@ -1,6 +1,7 @@
 {
   "name": "MICAS-Design",
   "id": 202813624446373,
+  "api": "1.0.0",
   "main": "dist/main.js",
   "ui": "dist/index.html",
   "editor_type": [

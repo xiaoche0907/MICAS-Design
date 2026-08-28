@@ -38,13 +38,13 @@
 
 九张照片必须属于：
 
-**Same Person**  
-**Same Outfit**  
-**Same Location**  
-**Same Time**  
-**Same Lighting**  
-**Different Camera Position**  
-**Different Framing**  
+**Same Person**
+**Same Outfit**
+**Same Location**
+**Same Time**
+**Same Lighting**
+**Different Camera Position**
+**Different Framing**
 **Different Natural Moment**
 
 形成完整的一组 Editorial Contact Sheet。
@@ -235,12 +235,12 @@
 
 核心状态：
 
-**Relaxed**  
-**Unposed**  
-**Effortless**  
-**Composed**  
-**Independent**  
-**Urban**  
+**Relaxed**
+**Unposed**
+**Effortless**
+**Composed**
+**Independent**
+**Urban**
 **Quiet Confidence**
 
 动作需要具有：
@@ -596,13 +596,13 @@
 
 关键词：
 
-Effortless Urban Elegance,  
-Citywalk Candid Photography,  
-Fashion Editorial,  
-Urban Lifestyle,  
-Quiet Luxury Mood,  
-Cinematic Street Photography,  
-Natural Body Language,  
-Editorial Contact Sheet,  
-Magazine Storytelling,  
+Effortless Urban Elegance,
+Citywalk Candid Photography,
+Fashion Editorial,
+Urban Lifestyle,
+Quiet Luxury Mood,
+Cinematic Street Photography,
+Natural Body Language,
+Editorial Contact Sheet,
+Magazine Storytelling,
 Candid Frozen Moments.

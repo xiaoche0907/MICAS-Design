@@ -312,9 +312,6 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                 <select className="v2-form-select" value={provider} onChange={handleProviderChange}>
                   <option value="apilio">柏拉图 API 中转 (推荐)</option>
                   <option value="virse">Virse 创意平台 (MCP)</option>
-                  <option value="openai-compatible">OpenAI Compatible</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="custom">自定义 Endpoint</option>
                 </select>
               </div>
 

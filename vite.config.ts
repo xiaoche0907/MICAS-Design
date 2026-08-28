@@ -15,9 +15,11 @@ export default defineConfig(() => {
         cssCodeSplit: false,
         brotliSize: false,
         rollupOptions: {
-          inlineDynamicImports: true,
           output: {
-            manualChunks: () => "index.js",
+            // Rollup 4 expects inlineDynamicImports under output. It cannot
+            // be combined with manualChunks, and singlefile handles the
+            // resulting bundle as one HTML asset.
+            inlineDynamicImports: true,
           },
         },
       }

@@ -60,6 +60,8 @@ import {
   PaletteIcon,
 } from './components/icons'
 
+const MAX_REFERENCE_IMAGES = 10
+
 // Dedicated styling-director rules are kept in the app so the preset remains
 // available in the deployed plugin without relying on a local attachment path.
 const micasStylingDirectorPrompt = `
@@ -645,9 +647,15 @@ export default function App() {
   // 剪贴板 Ctrl+V / Cmd+V 粘贴监听
   useEffect(() => {
     const handlePaste = (event: Event) => {
+      if (tryOnSource) return
       const e = event as ClipboardEvent
       const items = e.clipboardData?.items
       if (!items) return
+
+      if (references.length >= MAX_REFERENCE_IMAGES) {
+        setToast({ message: `最多只能添加 ${MAX_REFERENCE_IMAGES} 张参考图`, type: 'warning' })
+        return
+      }
 
       for (let i = 0; i < items.length; i++) {
         const item = items[i]
@@ -670,7 +678,9 @@ export default function App() {
                   width: imgObj.naturalWidth,
                   height: imgObj.naturalHeight,
                 }
-                setReferences((prev) => [...prev, newRef])
+                setReferences((prev) => (
+                  prev.length >= MAX_REFERENCE_IMAGES ? prev : [...prev, newRef]
+                ))
                 setGenMode('edit')
                 setToast({ message: '已提取剪贴板图片并添加为参考图！', type: 'success' })
               }
@@ -684,7 +694,7 @@ export default function App() {
 
     window.addEventListener('paste', handlePaste)
     return () => window.removeEventListener('paste', handlePaste)
-  }, [references])
+  }, [references, tryOnSource])
 
   // 拖拽上传 (Drag & Drop) 逻辑
   const handleDragOver = (e: React.DragEvent) => {
@@ -706,7 +716,16 @@ export default function App() {
 
     const files = e.dataTransfer?.files
     if (files && files.length > 0) {
-      Array.from(files).forEach((file) => {
+      const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'))
+      const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - references.length)
+      if (availableSlots === 0) {
+        setToast({ message: `最多只能添加 ${MAX_REFERENCE_IMAGES} 张参考图`, type: 'warning' })
+        return
+      }
+      if (imageFiles.length > availableSlots) {
+        setToast({ message: `最多识别 ${MAX_REFERENCE_IMAGES} 张图片，已保留前 ${availableSlots} 张`, type: 'warning' })
+      }
+      imageFiles.slice(0, availableSlots).forEach((file) => {
         if (file.type.startsWith('image/')) {
           const reader = new FileReader()
           reader.onload = (ev) => {
@@ -724,7 +743,9 @@ export default function App() {
                 width: imgObj.naturalWidth,
                 height: imgObj.naturalHeight,
               }
-              setReferences((prev) => [...prev, newRef])
+              setReferences((prev) => (
+                prev.length >= MAX_REFERENCE_IMAGES ? prev : [...prev, newRef]
+              ))
               setGenMode('edit')
               setToast({ message: `拖拽添加参考图成功: ${file.name}`, type: 'success' })
             }
@@ -867,10 +888,11 @@ export default function App() {
     setReferences((prev) => {
       const existingKeySet = new Set(prev.map((r) => r.name || r.id))
       const uniqueNewRefs: ReferenceImage[] = []
+      const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - prev.length)
 
       exportedImages.forEach((img, idx) => {
         const uniqueKey = img.id || img.name || `mg-${idx}`
-        if (!existingKeySet.has(uniqueKey)) {
+        if (!existingKeySet.has(uniqueKey) && uniqueNewRefs.length < availableSlots) {
           const dataUrl = uint8ArrayToDataUrl(img.bytes, img.mimeType)
           uniqueNewRefs.push({
             id: `ref-mg-${img.id || Date.now()}`,
@@ -887,7 +909,12 @@ export default function App() {
         }
       })
 
-      if (uniqueNewRefs.length === 0) return prev
+      if (uniqueNewRefs.length === 0) {
+        if (availableSlots === 0) {
+          setToast({ message: `最多只能添加 ${MAX_REFERENCE_IMAGES} 张参考图`, type: 'warning' })
+        }
+        return prev
+      }
 
       setToast({
         message: `已成功提取 ${uniqueNewRefs.length} 个 MasterGo 图层为参考图！`,
@@ -914,31 +941,46 @@ export default function App() {
   const handleLocalUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (files && files.length > 0) {
-      const file = files[0]
-      const reader = new FileReader()
-      reader.onload = (ev) => {
-        const dataUrl = ev.target?.result as string
-        if (!dataUrl) return
+      const availableSlots = Math.max(0, MAX_REFERENCE_IMAGES - references.length)
+      const imageFiles = Array.from(files)
+        .filter((file) => file.type.startsWith('image/'))
+        .slice(0, availableSlots)
 
-        const imgObj = new Image()
-        imgObj.onload = () => {
-          const newRef: ReferenceImage = {
-            id: `ref-up-${Date.now()}`,
-            role: references.length === 0 ? 'product' : 'scene',
-            source: 'upload',
-            name: file.name,
-            mimeType: file.type || 'image/png',
-            previewUrl: dataUrl,
-            width: imgObj.naturalWidth,
-            height: imgObj.naturalHeight,
-          }
-          setReferences((prev) => [...prev, newRef])
-          setGenMode('edit')
-          setToast({ message: '本地参考图已添加！', type: 'success' })
+      if (availableSlots === 0) {
+        setToast({ message: `最多只能添加 ${MAX_REFERENCE_IMAGES} 张参考图`, type: 'warning' })
+      } else {
+        if (files.length > availableSlots) {
+          setToast({ message: `最多识别 ${MAX_REFERENCE_IMAGES} 张图片，已保留前 ${availableSlots} 张`, type: 'warning' })
         }
-        imgObj.src = dataUrl
+        imageFiles.forEach((file, fileIndex) => {
+          const reader = new FileReader()
+          reader.onload = (ev) => {
+            const dataUrl = ev.target?.result as string
+            if (!dataUrl) return
+
+            const imgObj = new Image()
+            imgObj.onload = () => {
+              const newRef: ReferenceImage = {
+                id: `ref-up-${Date.now()}-${fileIndex}-${Math.random()}`,
+                role: references.length === 0 && fileIndex === 0 ? 'product' : 'scene',
+                source: 'upload',
+                name: file.name,
+                mimeType: file.type || 'image/png',
+                previewUrl: dataUrl,
+                width: imgObj.naturalWidth,
+                height: imgObj.naturalHeight,
+              }
+              setReferences((prev) => (
+                prev.length >= MAX_REFERENCE_IMAGES ? prev : [...prev, newRef]
+              ))
+              setGenMode('edit')
+              setToast({ message: '本地参考图已添加！', type: 'success' })
+            }
+            imgObj.src = dataUrl
+          }
+          reader.readAsDataURL(file)
+        })
       }
-      reader.readAsDataURL(file)
     }
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -1236,6 +1278,7 @@ export default function App() {
     aspectRatio: tryOnRatio,
     modelId: tryOnModelId,
     resolution: tryOnResolution,
+    poseLocked,
   }: TryOnPayload) => {
     if (!apiProfile || !apiProfile.apiKey) {
       setTryOnSource(null)
@@ -1268,7 +1311,7 @@ export default function App() {
       aspectRatio: tryOnRatio,
       resolution: tryOnResolution,
       outputCount: 1,
-      parameters: { operation: 'virtual-try-on', preserveIdentity: true, preservePose: true },
+      parameters: { operation: 'virtual-try-on', preserveIdentity: true, preservePose: poseLocked },
     }
 
     try {
@@ -1499,6 +1542,7 @@ export default function App() {
         ref={fileInputRef}
         style={{ display: 'none' }}
         accept="image/*"
+        multiple
         onChange={handleLocalUpload}
       />
 
@@ -1579,19 +1623,22 @@ export default function App() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div
+        <button
+          type="button"
           className="v2-ref-left"
-          onClick={() => setIsAddMenuOpen(!isAddMenuOpen)}
+          aria-haspopup="menu"
+          aria-expanded={isAddMenuOpen}
+          aria-label="上传参考图"
+          onClick={() => setIsAddMenuOpen((open) => !open)}
         >
           <span className="v2-ref-icon"><ImageIcon size={16} color="#E4E4E7" /></span>
-          <span>
-            {references.length > 0
-              ? '上传参考图'
-              : '上传/拖拽/粘贴参考图 (Ctrl+V)'}
+          <span className="v2-ref-label-copy">
+            <span className="v2-ref-label-title">上传参考图</span>
+            <small>{references.length > 0 ? `${references.length}/${MAX_REFERENCE_IMAGES}` : '可选'}</small>
           </span>
-        </div>
+        </button>
 
-        <div className="v2-ref-right-group">
+        <div className="v2-ref-thumbs">
           {/* 内嵌参考图缩略图 (直接鼠标拖拽卡片对调顺序，黑白极简角标) */}
           {references.map((ref, idx) => (
             <div
@@ -1609,8 +1656,10 @@ export default function App() {
 
               {/* 删除按钮 */}
               <button
+                type="button"
                 className="v2-ref-inline-del"
                 title="删除参考图"
+                aria-label={`删除第 ${idx + 1} 张参考图`}
                 onClick={(e) => {
                   e.stopPropagation()
                   setReferences((prev) => prev.filter((r) => r.id !== ref.id))
@@ -1621,17 +1670,9 @@ export default function App() {
             </div>
           ))}
 
-          {/* + 按钮 */}
-          <button
-            className="v2-ref-add-btn"
-            title="添加参考图"
-            onClick={() => setIsAddMenuOpen(!isAddMenuOpen)}
-          >
-            <PlusIcon size={14} color="#FFFFFF" />
-          </button>
-
           {references.length > 0 && (
             <button
+              type="button"
               className="v2-ref-clear-btn"
               title="删除全部参考图"
               aria-label="删除全部参考图"
@@ -1646,10 +1687,28 @@ export default function App() {
             </button>
           )}
 
+        </div>
+
+        <div className="v2-ref-add-anchor">
+          {/* + 按钮 */}
+          <button
+            type="button"
+            className="v2-ref-add-btn"
+            title="添加参考图"
+            aria-haspopup="menu"
+            aria-expanded={isAddMenuOpen}
+            aria-label="添加参考图"
+            onClick={() => setIsAddMenuOpen((open) => !open)}
+          >
+            <PlusIcon size={14} color="#FFFFFF" />
+          </button>
+
           {/* + 按钮弹出菜单 */}
           {isAddMenuOpen && (
-            <div className="v2-add-menu-floating">
-              <div
+            <div className="v2-add-menu-floating" role="menu" aria-label="添加参考图方式">
+              <button
+                type="button"
+                role="menuitem"
                 className="v2-add-menu-item"
                 onClick={() => {
                   sendMsgToPlugin({ type: UIMessage.EXPORT_SELECTION_IMAGE })
@@ -1661,8 +1720,10 @@ export default function App() {
                   <strong>来自选中</strong>
                   <small>快捷键 {formatShortcut(selectionShortcut)}</small>
                 </span>
-              </div>
-              <div
+              </button>
+              <button
+                type="button"
+                role="menuitem"
                 className="v2-add-menu-item"
                 onClick={() => {
                   fileInputRef.current?.click()
@@ -1671,7 +1732,7 @@ export default function App() {
               >
                 <span><UploadCloudIcon size={14} /></span>
                 <span className="v2-add-menu-copy"><strong>浏览文件</strong></span>
-              </div>
+              </button>
             </div>
           )}
         </div>

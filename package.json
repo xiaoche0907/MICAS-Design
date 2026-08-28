@@ -1,11 +1,12 @@
 {
   "name": "mastergo-plugin",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "scripts": {
     "dev": "npm run dev:ui & npm run dev:main",
     "dev:ui": "cross-env TARGET=ui NODE_ENV=development vite build --mode development -w",
     "dev:main": "cross-env TARGET=main NODE_ENV=development vite build --mode development -w",
-    "build": "npm run build:ui && npm run build:main && node -e \"try{require('fs').rmSync('./dist/assets',{recursive:true,force:true})}catch(e){}\"",
+    "build": "npm run typecheck && npm run build:ui && npm run build:main && node -e \"try{require('fs').rmSync('./dist/assets',{recursive:true,force:true})}catch(e){}\"",
+    "typecheck": "tsc --noEmit",
     "build:ui": "cross-env TARGET=ui vite build",
     "build:main": "cross-env TARGET=main vite build"
   },
@@ -19,15 +20,14 @@
     "@types/babel__core": "^7.1.18",
     "@types/react": "^17.0.39",
     "@types/react-dom": "^17.0.11",
-    "@vitejs/plugin-react": "^1.2.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^7.0.3",
     "typescript": "^4.5.5",
-    "vite": "^2.8.4",
+    "vite": "^6.4.3",
     "vite-plugin-html": "^3.0.6",
-    "vite-plugin-singlefile": "^0.6.3",
-    "cross-env": "^7.0.3"
+    "vite-plugin-singlefile": "^2.2.0"
   },
   "engines": {
-    "node": ">=14.14.0"
+    "node": ">=18.0.0"
   }
 }
-

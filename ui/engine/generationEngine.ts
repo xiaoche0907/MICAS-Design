@@ -12,11 +12,10 @@ export class GenerationEngine {
   private apilioAdapter = new ApilioAdapter()
   private virseAdapter = new VirseAdapter()
 
-  private getAdapter(provider?: string): ImageProviderAdapter {
-    if (provider === 'virse') {
-      return this.virseAdapter
-    }
-    return this.apilioAdapter
+  private getAdapter(provider?: string): ImageProviderAdapter | null {
+    if (provider === 'apilio') return this.apilioAdapter
+    if (provider === 'virse') return this.virseAdapter
+    return null
   }
 
   /**
@@ -27,6 +26,12 @@ export class GenerationEngine {
       return { success: false, message: '请先配置 API 参数' }
     }
     const adapter = this.getAdapter(profile.provider)
+    if (!adapter) {
+      return {
+        success: false,
+        message: `暂不支持服务提供商「${profile.provider || '未指定'}」，请选择柏拉图 API 或 Virse。`,
+      }
+    }
     return await adapter.testConnection(profile)
   }
 
@@ -37,7 +42,28 @@ export class GenerationEngine {
     request: GenerationRequest,
     profile: ApiProfile
   ): Promise<GenerationJob> {
-    if (!profile || !profile.apiKey) {
+    if (!profile) {
+      return {
+        status: 'failed',
+        error: {
+          code: 'NO_API_PROFILE',
+          message: '未配置 API 参数，请先配置 API。',
+        },
+      }
+    }
+
+    const adapter = this.getAdapter(profile.provider)
+    if (!adapter) {
+      return {
+        status: 'failed',
+        error: {
+          code: 'UNSUPPORTED_PROVIDER',
+          message: `暂不支持服务提供商「${profile.provider || '未指定'}」，请选择柏拉图 API 或 Virse。`,
+        },
+      }
+    }
+
+    if (!profile.apiKey) {
       return {
         status: 'failed',
         error: {
@@ -47,7 +73,6 @@ export class GenerationEngine {
       }
     }
 
-    const adapter = this.getAdapter(profile.provider)
     return await adapter.submit(request, profile)
   }
 }
