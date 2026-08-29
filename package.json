@@ -7,6 +7,7 @@
     "dev:main": "cross-env TARGET=main NODE_ENV=development vite build --mode development -w",
     "build": "npm run typecheck && npm run build:ui && npm run build:main && node -e \"try{require('fs').rmSync('./dist/assets',{recursive:true,force:true})}catch(e){}\"",
     "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.cjs",
     "build:ui": "cross-env TARGET=ui vite build",
     "build:main": "cross-env TARGET=main vite build"
   },

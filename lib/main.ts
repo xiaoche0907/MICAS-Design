@@ -10,6 +10,7 @@ import {
   InsertImagesPayload,
   InsertImageGridPayload,
   ExportedImagePayload,
+  RemoteImageBytesRequestPayload,
 } from '@messages/sender'
 
 // MasterGo supports one plugin UI window, so keep the main panel fixed.
@@ -22,6 +23,7 @@ const CLIENT_STORAGE_KEY = 'micas_api_profile_v1'
 const GENERATION_HISTORY_KEY = 'micas_generation_history_v1'
 const PROMPT_LIBRARY_KEY = 'micas_prompt_library_v1'
 const PANEL_SIZE = { width: 420, height: 820 }
+const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
 // Height includes enough room for MasterGo's native title bar plus the 50px toolbar.
 const IMAGE_MENU_SIZE = { width: 720, height: 94 }
 const OUTPAINT_SIZE = { width: 700, height: 720 }
@@ -220,6 +222,8 @@ async function exportSelectionImages(maxDimension = 1024) {
         mimeType: 'image/png',
         width: Math.round(width * scale),
         height: Math.round(height * scale),
+        displayWidth: width,
+        displayHeight: height,
       })
     } catch (err) {
       console.error(`导出节点 ${node.name} 失败:`, err)
@@ -437,6 +441,37 @@ async function resolveImageBytes(payload: InsertImagePayload): Promise<Uint8Arra
   throw new Error(lastError ? `无法下载生成图片: ${lastError}` : '无效的图片字节数据')
 }
 
+async function fetchRemoteImageBytes(payload: RemoteImageBytesRequestPayload) {
+  const urls = [payload.url, payload.proxyUrl].filter(Boolean) as string[]
+  let lastError = ''
+  for (const url of urls) {
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const contentLength = Number(response.headers.get('content-length') || 0)
+      if (contentLength > MAX_REMOTE_IMAGE_BYTES) throw new Error('图片超过 25MB 大小限制')
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      if (!bytes.length) throw new Error('empty response')
+      if (bytes.byteLength > MAX_REMOTE_IMAGE_BYTES) throw new Error('图片超过 25MB 大小限制')
+      sendMsgToUI({
+        type: PluginMessage.REMOTE_IMAGE_BYTES_LOADED,
+        payload: {
+          requestId: payload.requestId,
+          bytes,
+          mimeType: response.headers.get('content-type')?.split(';')[0] || 'image/png',
+        },
+      })
+      return
+    } catch (error: any) {
+      lastError = error?.message || String(error)
+    }
+  }
+  sendMsgToUI({
+    type: PluginMessage.REMOTE_IMAGE_BYTES_LOADED,
+    payload: { requestId: payload.requestId, error: lastError || '无法读取远程图片' },
+  })
+}
+
 /**
  * 将生成图片插回 MasterGo 画布
  */
@@ -605,6 +640,10 @@ mg.ui.onmessage = (msgReceived: any) => {
 
     case UIMessage.INSERT_IMAGE_GRID:
       insertImageGridToCanvas(msg.payload)
+      break
+
+    case UIMessage.GET_REMOTE_IMAGE_BYTES:
+      fetchRemoteImageBytes(msg.payload)
       break
 
     case UIMessage.SET_UI_MODE:

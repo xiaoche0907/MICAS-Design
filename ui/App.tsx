@@ -27,6 +27,7 @@ import {
 import { generationEngine } from './engine/generationEngine'
 import { polishPrompt } from './engine/promptPolisher'
 import { DEFAULT_SELECTION_SHORTCUT, formatShortcut, shortcutFromKeyboardEvent } from './utils/shortcut'
+import { chromaKeyColor, chromaKeyHex, chooseChromaKey, quickCutout, ChromaKeyName } from './utils/quickCutout'
 import sceneFissionAgentPrompt from '../AI模特场景图裂变_Agent提示词.md?raw'
 import urbanStyleFissionGridPrompt from '../城市风格裂变9宫格_Agent提示词.md?raw'
 import outfitExtractionAgentPrompt from '../AI 穿搭拆解与白底搭配全览生成 Agent｜System Prompt (1).md?raw'
@@ -61,6 +62,41 @@ import {
 } from './components/icons'
 
 const MAX_REFERENCE_IMAGES = 10
+function buildQuickCutoutAiPrompt(keyName: ChromaKeyName, keyColor: [number, number, number]): string {
+  return `高精度主体抠图：以当前参考图为唯一来源，精准保留当前可见的完整人物或商品主体、头发、薄纱、细小边缘和内部白色细节；只移除背景。请生成均匀的${keyName}彩幕背景 ${chromaKeyHex(keyName)}，无阴影、无渐变、无地面、无场景、无文字。不得补画、重绘、替换或改变当前可见主体，不改变衣服、姿态、比例、颜色、材质或细节。`
+}
+
+function cutoutFallbackKey(key: ChromaKeyName | undefined): ChromaKeyName {
+  return key || 'green'
+}
+
+type QuickCutoutGenerationOverride = {
+  references: ReferenceImage[]
+  prompt: string
+  expectedBackground: [number, number, number]
+}
+
+const remoteImageByteRequests = new Map<string, {
+  resolve: (result: { bytes: Uint8Array; mimeType: string }) => void
+  reject: (error: Error) => void
+}>()
+
+function requestRemoteImageBytes(url: string, proxyUrl?: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
+  const requestId = `remote-image-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return new Promise((resolve, reject) => {
+    remoteImageByteRequests.set(requestId, { resolve, reject })
+    sendMsgToPlugin({
+      type: UIMessage.GET_REMOTE_IMAGE_BYTES,
+      payload: { requestId, url, proxyUrl },
+    })
+    window.setTimeout(() => {
+      const pending = remoteImageByteRequests.get(requestId)
+      if (!pending) return
+      remoteImageByteRequests.delete(requestId)
+      pending.reject(new Error('主线程读取远程图片超时'))
+    }, 15000)
+  })
+}
 
 // Dedicated styling-director rules are kept in the app so the preset remains
 // available in the deployed plugin without relying on a local attachment path.
@@ -312,6 +348,90 @@ function canvasToPngBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
   })
 }
 
+async function quickCutoutBytes(
+  bytes: Uint8Array,
+  mimeType = 'image/png',
+  expectedBackground?: [number, number, number]
+): Promise<{ bytes: Uint8Array; width: number; height: number; success: boolean; reason?: string; chromaKey?: ChromaKeyName; expectedBackground?: [number, number, number] }> {
+  const source = await loadImageFromDataUrl(uint8ArrayToDataUrl(bytes, mimeType))
+  const width = source.naturalWidth
+  const height = source.naturalHeight
+  if (!width || !height) throw new Error('图片尺寸无效')
+  const scale = Math.min(1, 2048 / Math.max(width, height))
+  const processingWidth = Math.max(1, Math.round(width * scale))
+  const processingHeight = Math.max(1, Math.round(height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = processingWidth
+  canvas.height = processingHeight
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) throw new Error('当前环境不支持快速抠图')
+  context.drawImage(source, 0, 0, processingWidth, processingHeight)
+  const sourceData = context.getImageData(0, 0, processingWidth, processingHeight)
+  const detectedChromaKey = chooseChromaKey(sourceData)
+  const detectedBackground = detectedChromaKey ? chromaKeyColor(detectedChromaKey) : [255, 255, 255] as [number, number, number]
+  const result = quickCutout(sourceData, { expectedBackground })
+  if (!result.success) {
+    return { bytes, width, height, success: false, reason: result.reason, chromaKey: detectedChromaKey || undefined, expectedBackground: detectedBackground }
+  }
+  context.putImageData(result.imageData, 0, 0)
+  return {
+    bytes: await canvasToPngBytes(canvas),
+    width: processingWidth,
+    height: processingHeight,
+    success: true,
+    chromaKey: detectedChromaKey || undefined,
+    expectedBackground: detectedBackground,
+  }
+}
+
+async function detectReferenceChromaKey(reference: ReferenceImage): Promise<ChromaKeyName> {
+  try {
+    const sourceUrl = reference.bytes?.length
+      ? uint8ArrayToDataUrl(reference.bytes, reference.mimeType)
+      : reference.previewUrl
+    const source = await loadImageFromDataUrl(sourceUrl)
+    const canvas = document.createElement('canvas')
+    const scale = Math.min(1, 2048 / Math.max(source.naturalWidth || 1, source.naturalHeight || 1))
+    canvas.width = Math.max(1, Math.round((source.naturalWidth || 1) * scale))
+    canvas.height = Math.max(1, Math.round((source.naturalHeight || 1) * scale))
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) return 'green'
+    context.drawImage(source, 0, 0, canvas.width, canvas.height)
+    return chooseChromaKey(context.getImageData(0, 0, canvas.width, canvas.height)) || 'green'
+  } catch {
+    return 'green'
+  }
+}
+
+async function transparentizeGeneratedImage(
+  image: GeneratedImage,
+  relayUrl?: string,
+  expectedBackground?: [number, number, number]
+): Promise<{ image: GeneratedImage; success: boolean; reason?: string }> {
+  try {
+    const payload = await generatedImageToInsertPayload(image, relayUrl)
+    if (!payload.bytes?.length) return { image, success: false, reason: '图片字节不可用' }
+    const cutout = await quickCutoutBytes(payload.bytes, payload.mimeType || image.mimeType, expectedBackground)
+    if (!cutout.success) return { image, success: false, reason: cutout.reason }
+    const blob = new Blob([cutout.bytes as any], { type: 'image/png' })
+    const url = URL.createObjectURL(blob)
+    return {
+      image: {
+        ...image,
+        url,
+        bytes: cutout.bytes,
+        mimeType: 'image/png',
+        width: cutout.width,
+        height: cutout.height,
+        transient: true,
+      },
+      success: true,
+    }
+  } catch (error: any) {
+    return { image, success: false, reason: error?.message || String(error) }
+  }
+}
+
 async function cropImageIntoNineTiles(image: ExportedImagePayload): Promise<InsertImagePayload[]> {
   const source = await loadImageFromDataUrl(uint8ArrayToDataUrl(image.bytes, image.mimeType))
   const sourceWidth = source.naturalWidth
@@ -391,6 +511,7 @@ async function generatedImageToInsertPayload(
     : readImageDimensions(img.url)
 
   let bytes: Uint8Array | undefined
+  let resolvedMimeType = img.mimeType || 'image/png'
   const sourceUrl = /^https?:/i.test(img.url) ? img.url : undefined
   const proxyUrl = sourceUrl ? getImageProxyUrl(relayUrl, sourceUrl) || undefined : undefined
   if (img.bytes?.length) {
@@ -415,7 +536,19 @@ async function generatedImageToInsertPayload(
         }
       }
     }
-    if (response) bytes = new Uint8Array(await response.arrayBuffer())
+    if (!response && sourceUrl) {
+      try {
+        const remote = await requestRemoteImageBytes(sourceUrl, proxyUrl)
+        bytes = remote.bytes
+        resolvedMimeType = remote.mimeType
+      } catch (mainThreadError: any) {
+        console.warn('UI 与主线程均无法读取远程图片', directError, mainThreadError)
+      }
+    }
+    if (response) {
+      bytes = new Uint8Array(await response.arrayBuffer())
+      resolvedMimeType = response.headers.get('content-type')?.split(';')[0] || resolvedMimeType
+    }
   }
 
   if (!bytes?.length && !sourceUrl) throw new Error('生成图片内容为空')
@@ -426,12 +559,15 @@ async function generatedImageToInsertPayload(
     proxyUrl,
     width: dimensions.width,
     height: dimensions.height,
+    mimeType: resolvedMimeType,
     name: `MICAS AI - ${img.prompt.slice(0, 30)}`,
   }
 }
 
 export default function App() {
   const [apiProfile, setApiProfile] = useState<ApiProfile | null>(null)
+  const apiProfileRef = useRef<ApiProfile | null>(apiProfile)
+  apiProfileRef.current = apiProfile
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false)
   const [settingsInitialSection, setSettingsInitialSection] = useState<'models' | 'agents' | 'image-host' | 'shortcuts'>('models')
   const [selectionShortcut, setSelectionShortcut] = useState(() => {
@@ -511,6 +647,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
   const [genTimer, setGenTimer] = useState<number>(0)
   const [results, setResults] = useState<GeneratedImage[]>([])
+  const transientUrlsRef = useRef<Set<string>>(new Set())
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false)
   const [quickSelection, setQuickSelection] = useState<LayerSummary | null>(null)
   const [outpaintSource, setOutpaintSource] = useState<ReferenceImage | null>(null)
@@ -535,6 +672,33 @@ export default function App() {
   const isGeneratingRef = useRef(false)
   const awaitingAutomaticInsertRef = useRef(false)
   const backgroundUiModeRef = useRef(false)
+  const quickCutoutAiPendingRef = useRef(false)
+  const quickCutoutAiRunningRef = useRef(false)
+  const quickCutoutAiSetupRef = useRef(false)
+  const quickCutoutAiPromptRef = useRef(buildQuickCutoutAiPrompt('green', chromaKeyColor('green')))
+  const quickCutoutAiExpectedBackgroundRef = useRef<[number, number, number]>(chromaKeyColor('green'))
+
+  const revokeTransientImage = (image: GeneratedImage) => {
+    if (!image.transient || !image.url.startsWith('blob:')) return
+    URL.revokeObjectURL(image.url)
+    transientUrlsRef.current.delete(image.url)
+  }
+
+  const mergeGenerationResults = (incoming: GeneratedImage[], previous: GeneratedImage[]) => {
+    const next = [...incoming, ...previous].slice(0, 20)
+    const retainedUrls = new Set(next.map((item) => item.url))
+    previous.forEach((item) => {
+      if (item.transient && !retainedUrls.has(item.url)) revokeTransientImage(item)
+    })
+    return next
+  }
+
+  useEffect(() => () => {
+    transientUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+    transientUrlsRef.current.clear()
+    remoteImageByteRequests.forEach((pending) => pending.reject(new Error('插件已关闭')))
+    remoteImageByteRequests.clear()
+  }, [])
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -545,6 +709,18 @@ export default function App() {
         case PluginMessage.API_PROFILE_LOADED:
           setApiProfile(msg.payload)
           break
+
+        case PluginMessage.REMOTE_IMAGE_BYTES_LOADED: {
+          const pending = remoteImageByteRequests.get(msg.payload.requestId)
+          if (!pending) break
+          remoteImageByteRequests.delete(msg.payload.requestId)
+          if (msg.payload.bytes?.length) pending.resolve({
+            bytes: msg.payload.bytes,
+            mimeType: msg.payload.mimeType || 'image/png',
+          })
+          else pending.reject(new Error(msg.payload.error || '主线程无法读取远程图片'))
+          break
+        }
 
         case PluginMessage.SELECTION_IMAGE_EXPORTED:
           void handleMasterGoImagesExported(msg.payload)
@@ -869,6 +1045,75 @@ export default function App() {
       return
     }
 
+    if (pendingAction?.kind === 'quick-cutout') {
+      if (exportedImages.length !== 1) {
+        setToast({ message: '快速抠图每次仅支持一张图片', type: 'warning' })
+        return
+      }
+      const sourceImage = exportedImages[0]
+      if (quickCutoutAiSetupRef.current || quickCutoutAiRunningRef.current || isGeneratingRef.current) return
+      let detectedChromaKey: ChromaKeyName | undefined
+      try {
+        setToast({ message: '正在分析背景并生成透明 PNG…', type: 'info' })
+        const cutout = await quickCutoutBytes(sourceImage.bytes, sourceImage.mimeType)
+        if (cutout.success) {
+          setQuickSelection(null)
+          awaitingAutomaticInsertRef.current = true
+          sendMsgToPlugin({
+            type: UIMessage.INSERT_IMAGES,
+            payload: {
+              images: [{
+                bytes: cutout.bytes,
+                mimeType: 'image/png',
+                width: sourceImage.displayWidth || sourceImage.width || cutout.width,
+                height: sourceImage.displayHeight || sourceImage.height || cutout.height,
+                name: `${(sourceImage.name || 'MasterGo 图片').replace(/\.[^.]+$/, '')}-快速抠图.png`,
+              }],
+            },
+          })
+          setToast({ message: '快速抠图完成，透明 PNG 已插入画布', type: 'success' })
+          return
+        }
+        detectedChromaKey = cutout.chromaKey || undefined
+        console.info('本地快速抠图转入 AI 预处理:', cutout.reason)
+      } catch (error) {
+        console.warn('本地快速抠图失败，转入 AI 预处理', error)
+      }
+
+      const chromaKey = cutoutFallbackKey(detectedChromaKey)
+      const chromaColor = chromaKeyColor(chromaKey)
+      const uniqueReference: ReferenceImage = {
+        id: `ref-quick-cutout-${sourceImage.id}-${Date.now()}`,
+        role: 'product',
+        source: 'mastergo',
+        name: sourceImage.name,
+        mimeType: sourceImage.mimeType,
+        bytes: sourceImage.bytes,
+        previewUrl: uint8ArrayToDataUrl(sourceImage.bytes, sourceImage.mimeType),
+        width: sourceImage.width,
+        height: sourceImage.height,
+      }
+      const quickPrompt = buildQuickCutoutAiPrompt(chromaKey, chromaColor)
+      // Set refs synchronously before the request. The explicit override below
+      // prevents this event handler from depending on React's async state flush.
+      quickCutoutAiPendingRef.current = true
+      quickCutoutAiPromptRef.current = quickPrompt
+      quickCutoutAiExpectedBackgroundRef.current = chromaColor
+      setPrompt(quickPrompt)
+      setReferences([uniqueReference])
+      setGenMode('edit')
+      setToast({ message: '正在进行AI主体分割并生成透明PNG', type: 'info' })
+      if (!quickCutoutAiSetupRef.current && !quickCutoutAiRunningRef.current && !isGeneratingRef.current) {
+        quickCutoutAiSetupRef.current = true
+        void handleGenerate({
+          references: [uniqueReference],
+          prompt: quickPrompt,
+          expectedBackground: chromaColor,
+        })
+      }
+      return
+    }
+
     if (pendingAction?.kind === 'download') {
       exportedImages.forEach((img, index) => {
         const blob = new Blob([img.bytes as any], { type: img.mimeType || 'image/png' })
@@ -986,7 +1231,7 @@ export default function App() {
   }
 
   const persistGenerationHistory = (images: GeneratedImage[]) => {
-    const history: GenerationHistoryItem[] = images.slice(0, 20).map((image) => ({
+    const history: GenerationHistoryItem[] = images.filter((image) => !image.transient).slice(0, 20).map((image) => ({
       id: image.id,
       url: image.url,
       mimeType: image.mimeType,
@@ -1083,6 +1328,7 @@ export default function App() {
   }
 
   const handleSelectStyleAgent = (preset: StyleAgentPreset) => {
+    quickCutoutAiPendingRef.current = false
     const presetModel = preset.defaultModelId
       ? availableModels.find((model) => model.id === preset.defaultModelId)
       : null
@@ -1108,7 +1354,7 @@ export default function App() {
         type: 'info',
       })
       const payloads = await Promise.all(images.map((image) => (
-        generatedImageToInsertPayload(image, apiProfile?.virseRelayUrl)
+        generatedImageToInsertPayload(image, apiProfileRef.current?.virseRelayUrl)
       )))
       if (automatic) awaitingAutomaticInsertRef.current = true
       sendMsgToPlugin({
@@ -1126,25 +1372,51 @@ export default function App() {
   }
 
   // 发起 AI 生成
-  const handleGenerate = async () => {
-    if (!prompt.trim()) {
+  const handleGenerate = async (quickCutoutOverride?: QuickCutoutGenerationOverride) => {
+    const quickCutoutGeneration = Boolean(quickCutoutOverride) || quickCutoutAiPendingRef.current
+    const generationReferences = quickCutoutOverride?.references || references
+    const currentApiProfile = apiProfileRef.current || apiProfile
+    if (quickCutoutGeneration && (quickCutoutAiRunningRef.current || isGeneratingRef.current)) {
+      if (quickCutoutOverride && !quickCutoutAiRunningRef.current) {
+        quickCutoutAiPendingRef.current = false
+        quickCutoutAiSetupRef.current = false
+        setToast({ message: '当前已有生成任务，快速抠图已取消', type: 'warning' })
+      }
+      return
+    }
+    if (!quickCutoutGeneration && !prompt.trim()) {
       setToast({ message: '请描述你想生成的图片内容', type: 'warning' })
       return
     }
 
-    if (!apiProfile || !apiProfile.apiKey) {
+    if (!currentApiProfile || !currentApiProfile.apiKey) {
+      if (quickCutoutGeneration) {
+        quickCutoutAiPendingRef.current = false
+        quickCutoutAiSetupRef.current = false
+      }
       setSettingsInitialSection('models')
       setIsSettingsOpen(true)
       setToast({ message: '请配置您的 API Key (BYOK)', type: 'warning' })
       return
     }
 
-    if (activeStyleAgent?.requiresReference && references.length === 0) {
+    if (quickCutoutGeneration && generationReferences.length === 0) {
+      quickCutoutAiPendingRef.current = false
+      quickCutoutAiSetupRef.current = false
+      setToast({ message: '快速抠图需要先上传或选择一张参考图', type: 'warning' })
+      return
+    }
+
+    if (!quickCutoutGeneration && activeStyleAgent?.requiresReference && references.length === 0) {
       setToast({ message: `${activeStyleAgent.name}需要至少上传一张参考图`, type: 'warning' })
       return
     }
 
     isGeneratingRef.current = true
+    if (quickCutoutGeneration) {
+      quickCutoutAiRunningRef.current = true
+      quickCutoutAiSetupRef.current = false
+    }
     awaitingAutomaticInsertRef.current = false
     setQuickSelection(null)
     sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
@@ -1157,28 +1429,55 @@ export default function App() {
     setToast({ message: 'MICAS AI 正在为您生成商业视觉大图...', type: 'info' })
 
     const request: GenerationRequest = {
-      intent: references.length > 0 ? 'edit' : 'generate',
-      prompt: activeStyleAgent ? composeStyleAgentPrompt(activeStyleAgent, prompt) : prompt,
+      intent: quickCutoutGeneration || generationReferences.length > 0 ? 'edit' : 'generate',
+      prompt: quickCutoutGeneration
+        ? (quickCutoutOverride?.prompt || quickCutoutAiPromptRef.current)
+        : activeStyleAgent ? composeStyleAgentPrompt(activeStyleAgent, prompt) : prompt,
       model: selectedModel,
-      references,
+      references: quickCutoutGeneration ? generationReferences.slice(0, 1) : references,
       aspectRatio,
       resolution,
-      outputCount,
+      outputCount: quickCutoutGeneration ? 1 : outputCount,
+      parameters: quickCutoutGeneration ? { operation: 'quick-cutout', preserveSubject: true } : undefined,
     }
 
     try {
-      const job = await generationEngine.generate(request, apiProfile)
+      const job = await generationEngine.generate(request, currentApiProfile)
       if (job.status === 'completed' && job.results) {
-        const completedResults = activeStyleAgent
+        const generatedResults = activeStyleAgent && !quickCutoutGeneration
           ? job.results.map((image) => ({ ...image, prompt: `[${activeStyleAgent.name}] ${prompt.trim()}` }))
           : job.results
+        let completedResults = generatedResults
+        let quickCutoutFailure = ''
+        if (quickCutoutGeneration) {
+          const processed = await Promise.all(generatedResults.map((image) => (
+            transparentizeGeneratedImage(
+              image,
+              currentApiProfile?.virseRelayUrl,
+              quickCutoutOverride?.expectedBackground || quickCutoutAiExpectedBackgroundRef.current
+            )
+          )))
+          completedResults = processed.map((item) => {
+            if (!item.success && !quickCutoutFailure) quickCutoutFailure = item.reason || '背景不满足透明化条件'
+            if (item.success && item.image.url.startsWith('blob:')) transientUrlsRef.current.add(item.image.url)
+            return item.image
+          })
+          if (quickCutoutFailure) {
+            setToast({ message: `透明化失败，彩幕结果未插入，原图保持不变：${quickCutoutFailure}`, type: 'warning' })
+          }
+        }
         setResults((prev) => {
-          const nextResults = [...completedResults, ...prev].slice(0, 20)
+          const nextResults = mergeGenerationResults(completedResults, prev)
           persistGenerationHistory(nextResults)
           return nextResults
         })
         setIsHistoryOpen(true)
-        await insertGeneratedImages(completedResults, true)
+        if (!quickCutoutGeneration || !quickCutoutFailure) {
+          await insertGeneratedImages(completedResults, true)
+        } else {
+          setToast({ message: `透明化失败，彩幕结果未插入，原图保持不变：${quickCutoutFailure}`, type: 'warning' })
+        }
+        quickCutoutAiPendingRef.current = false
       } else {
         setToast({ message: job.error?.message || '生成失败，请检查 API 设置', type: 'error' })
       }
@@ -1187,6 +1486,11 @@ export default function App() {
     } finally {
       clearInterval(timerInterval)
       isGeneratingRef.current = false
+      if (quickCutoutGeneration) {
+        quickCutoutAiPendingRef.current = false
+        quickCutoutAiRunningRef.current = false
+        quickCutoutAiSetupRef.current = false
+      }
       setIsGenerating(false)
     }
   }
@@ -1248,7 +1552,7 @@ export default function App() {
         prompt: `[智能扩图 ${targetRatio}] ${outpaintPrompt}`,
       }))
       setResults((previous) => {
-        const nextResults = [...completedResults, ...previous].slice(0, 20)
+        const nextResults = mergeGenerationResults(completedResults, previous)
         persistGenerationHistory(nextResults)
         return nextResults
       })
@@ -1330,7 +1634,7 @@ export default function App() {
         prompt: `[万物上身] ${tryOnPrompt}`,
       }))
       setResults((previous) => {
-        const nextResults = [...completedResults, ...previous].slice(0, 20)
+        const nextResults = mergeGenerationResults(completedResults, previous)
         persistGenerationHistory(nextResults)
         return nextResults
       })
@@ -1365,6 +1669,7 @@ export default function App() {
   }
 
   const runQuickImageAction = (kind: string, promptValue?: string) => {
+    if (kind !== 'quick-cutout') quickCutoutAiPendingRef.current = false
     pendingQuickActionRef.current = { kind, prompt: promptValue }
     if (kind === 'upscale') setResolution('2K')
     if (kind === 'grid-crop') {
@@ -1372,18 +1677,24 @@ export default function App() {
     }
     sendMsgToPlugin({
       type: UIMessage.EXPORT_SELECTION_IMAGE,
-      payload: kind === 'grid-crop' ? { maxDimension: 4096 } : undefined,
+      payload: kind === 'grid-crop'
+        ? { maxDimension: 4096 }
+        : kind === 'quick-cutout'
+          ? { maxDimension: 2048 }
+          : undefined,
     })
     if (kind !== 'download') openFullPanel()
   }
 
   const clearGenerationHistory = () => {
+    results.forEach(revokeTransientImage)
     setResults([])
     persistGenerationHistory([])
     setToast({ message: '生成记录已清空', type: 'info' })
   }
 
   const deleteGenerationHistoryItem = (image: GeneratedImage) => {
+    revokeTransientImage(image)
     setResults((currentResults) => {
       const nextResults = currentResults.filter((item) => item.id !== image.id)
       persistGenerationHistory(nextResults)
@@ -1510,7 +1821,7 @@ export default function App() {
           <button onClick={() => runQuickImageAction('grid-crop')}><span><GridIcon size={15} /></span>九宫格</button>
           <button onClick={() => runQuickImageAction('upscale', '高清放大当前图片，增强材质与细节，保持原始构图和内容不变')}><span><UpscaleIcon size={15} /></span>放大</button>
           <button onClick={() => runQuickImageAction('outpaint')}><span><ExpandIcon size={15} /></span>智能扩图</button>
-          <button onClick={() => runQuickImageAction('remove-bg', '移除背景，精准保留人物或商品边缘，输出干净的透明背景 PNG')}><span><RemoveBackgroundIcon size={15} /></span>去背景</button>
+          <button onClick={() => runQuickImageAction('quick-cutout')}><span><RemoveBackgroundIcon size={15} /></span>快速抠图</button>
           <button onClick={() => runQuickImageAction('try-on')}><span><WardrobeIcon size={15} /></span>万物上身</button>
           <button onClick={() => runQuickImageAction('angles', '基于当前人物或商品生成不同拍摄角度，保持主体、服装与场景一致')}><span><CubeIcon size={15} /></span>多角度</button>
           <button onClick={() => runQuickImageAction('adjust', '优化选中图片的色彩、光影、对比度与商业质感，保持内容不变')}><span><SlidersIcon size={15} /></span>画面调整</button>
@@ -1858,8 +2169,36 @@ export default function App() {
         <button
           className="v2-quick-btn"
           onClick={() => {
-            setPrompt('移除背景，智能精准抠图，透明背景 PNG')
+            if (references.length === 0) {
+              quickCutoutAiPendingRef.current = false
+              quickCutoutAiSetupRef.current = false
+              setToast({ message: '快速抠图需要先上传或选择一张参考图', type: 'warning' })
+              return
+            }
+            if (quickCutoutAiSetupRef.current || quickCutoutAiRunningRef.current || isGeneratingRef.current) return
+            if (!apiProfileRef.current?.apiKey) {
+              setSettingsInitialSection('models')
+              setIsSettingsOpen(true)
+              setToast({ message: '请配置您的 API Key (BYOK)', type: 'warning' })
+              return
+            }
+            const source = references[0]
+            quickCutoutAiSetupRef.current = true
             setGenMode('edit')
+            void detectReferenceChromaKey(source).then((key) => {
+              const color = chromaKeyColor(key)
+              const quickPrompt = buildQuickCutoutAiPrompt(key, color)
+              quickCutoutAiPromptRef.current = quickPrompt
+              quickCutoutAiExpectedBackgroundRef.current = color
+              quickCutoutAiPendingRef.current = true
+              setPrompt(quickPrompt)
+              setReferences([source])
+              setToast({ message: '正在进行AI主体分割并生成透明PNG', type: 'info' })
+              void handleGenerate({ references: [source], prompt: quickPrompt, expectedBackground: color })
+            }).catch((error) => {
+              quickCutoutAiSetupRef.current = false
+              setToast({ message: `快速抠图准备失败：${error?.message || error}`, type: 'warning' })
+            })
           }}
         >
           <ScissorsIcon size={14} />
@@ -1868,6 +2207,7 @@ export default function App() {
         <button
           className="v2-quick-btn"
           onClick={() => {
+            quickCutoutAiPendingRef.current = false
             setPrompt('扁平矢量图标风格，极简线条，高分辨率 Vector Graphic')
             setGenMode('icon')
           }}
@@ -2006,8 +2346,11 @@ export default function App() {
                     id: `ref-reuse-${Date.now()}`,
                     role: 'style',
                     source: 'upload',
-                    previewUrl: img.url,
+                    previewUrl: img.transient && img.bytes?.length
+                      ? uint8ArrayToDataUrl(img.bytes, img.mimeType)
+                      : img.url,
                     mimeType: 'image/png',
+                    bytes: img.bytes,
                   },
                 ])
                 setToast({ message: '已设为新的参考图！', type: 'success' })
@@ -2140,7 +2483,7 @@ export default function App() {
         <button
           className={`v2-generate-submit-btn ${isGenerating ? 'generating' : ''}`}
           disabled={isGenerating}
-          onClick={handleGenerate}
+          onClick={() => { void handleGenerate() }}
         >
           {isGenerating ? (
             <>

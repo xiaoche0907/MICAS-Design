@@ -16,6 +16,17 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({
 }) => {
   const [previewImage, setPreviewImage] = useState<GeneratedImage | null>(null)
 
+  const downloadImage = (image: GeneratedImage) => {
+    const temporaryUrl = image.bytes?.length
+      ? URL.createObjectURL(new Blob([image.bytes as any], { type: image.mimeType || 'image/png' }))
+      : null
+    const link = document.createElement('a')
+    link.href = temporaryUrl || image.url
+    link.download = `${image.transient ? 'MICAS-快速抠图' : 'MICAS-image'}.png`
+    link.click()
+    if (temporaryUrl) window.setTimeout(() => URL.revokeObjectURL(temporaryUrl), 1000)
+  }
+
   if (!results?.length) return null
 
   return (
@@ -43,6 +54,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({
             {image.width && image.height && <span>{image.width} × {image.height}</span>}
           </div>
           <div className="history-result-actions">
+            <button onClick={() => downloadImage(image)}>下载 PNG</button>
             <button onClick={() => onReuseAsReference(image)}>设为参考</button>
             <button className="primary" onClick={() => onInsertToCanvas(image)}>插入画布</button>
           </div>
@@ -59,7 +71,8 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({
             <div className="history-preview-body">
               <img src={previewImage.url} alt="AI 生成图大图预览" />
             </div>
-            <div className="history-preview-actions">
+          <div className="history-preview-actions">
+            <button onClick={() => downloadImage(previewImage)}>下载 PNG</button>
               <button
                 className="danger"
                 onClick={() => {

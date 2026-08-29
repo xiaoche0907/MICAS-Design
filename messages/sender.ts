@@ -46,6 +46,9 @@ export interface ExportedImagePayload {
   mimeType: string
   width: number
   height: number
+  /** Original MasterGo canvas display dimensions, before export downscaling. */
+  displayWidth?: number
+  displayHeight?: number
 }
 
 export interface InsertImagePayload {
@@ -68,6 +71,19 @@ export interface InsertImageGridPayload {
   columns: number
   rows: number
   gap?: number
+}
+
+export interface RemoteImageBytesRequestPayload {
+  requestId: string
+  url: string
+  proxyUrl?: string
+}
+
+export interface RemoteImageBytesPayload {
+  requestId: string
+  bytes?: Uint8Array
+  mimeType?: string
+  error?: string
 }
 
 export interface ExportSelectionImagePayload {
@@ -110,6 +126,7 @@ export enum PluginMessage {
   PROMPT_LIBRARY_LOADED = 'PROMPT_LIBRARY_LOADED',
   ERROR = 'ERROR',
   TOAST = 'TOAST',
+  REMOTE_IMAGE_BYTES_LOADED = 'REMOTE_IMAGE_BYTES_LOADED',
 }
 
 export enum UIMessage {
@@ -126,6 +143,7 @@ export enum UIMessage {
   SAVE_GENERATION_HISTORY = 'SAVE_GENERATION_HISTORY',
   GET_PROMPT_LIBRARY = 'GET_PROMPT_LIBRARY',
   SAVE_PROMPT_LIBRARY = 'SAVE_PROMPT_LIBRARY',
+  GET_REMOTE_IMAGE_BYTES = 'GET_REMOTE_IMAGE_BYTES',
 }
 
 export type PluginMessageData =
@@ -140,6 +158,7 @@ export type PluginMessageData =
   | { type: PluginMessage.PROMPT_LIBRARY_LOADED; payload: PromptLibraryItem[] }
   | { type: PluginMessage.ERROR; payload: { message: string } }
   | { type: PluginMessage.TOAST; payload: { message: string; messageType?: 'success' | 'error' | 'warning' | 'info' } }
+  | { type: PluginMessage.REMOTE_IMAGE_BYTES_LOADED; payload: RemoteImageBytesPayload }
 
 export type UIMessageData =
   | { type: UIMessage.PING }
@@ -155,6 +174,7 @@ export type UIMessageData =
   | { type: UIMessage.SAVE_GENERATION_HISTORY; payload: GenerationHistoryItem[] }
   | { type: UIMessage.GET_PROMPT_LIBRARY }
   | { type: UIMessage.SAVE_PROMPT_LIBRARY; payload: PromptLibraryItem[] }
+  | { type: UIMessage.GET_REMOTE_IMAGE_BYTES; payload: RemoteImageBytesRequestPayload }
 
 /**
  * 向 UI 发送消息 (从 Main 调用)

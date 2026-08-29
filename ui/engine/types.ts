@@ -66,6 +66,8 @@ export interface GeneratedImage {
   height?: number
   prompt: string
   createdAt: number
+  /** In-memory derived result; never persist this Blob URL to clientStorage. */
+  transient?: boolean
 }
 
 export interface GenerationJob {
