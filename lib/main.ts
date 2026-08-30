@@ -182,6 +182,10 @@ async function exportSelectionImages(maxDimension = 1024) {
       type: PluginMessage.TOAST,
       payload: { message: '请先在 MasterGo 画布中选择至少一个图层', messageType: 'warning' },
     })
+    sendMsgToUI({
+      type: PluginMessage.SELECTION_IMAGE_EXPORTED,
+      payload: [],
+    })
     return
   }
 
@@ -475,7 +479,7 @@ async function fetchRemoteImageBytes(payload: RemoteImageBytesRequestPayload) {
 /**
  * 将生成图片插回 MasterGo 画布
  */
-async function insertImageToCanvas(payload: InsertImagePayload) {
+async function insertImageToCanvas(payload: InsertImagePayload, requestId?: string): Promise<boolean> {
   try {
     const imageBytes = await resolveImageBytes(payload)
     const intrinsicSize = readImageDimensions(imageBytes)
@@ -498,8 +502,9 @@ async function insertImageToCanvas(payload: InsertImagePayload) {
     ]
 
     const selection = mg.document.currentPage.selection || []
-    if (selection.length > 0) {
-      const target = selection[0] as any
+    const anchoredTarget = payload.anchorNodeId ? mg.getNodeById(payload.anchorNodeId) as any : null
+    if (anchoredTarget || selection.length > 0) {
+      const target = anchoredTarget || selection[0] as any
       const bounds = target.absoluteBoundingBox || target
       rect.x = (bounds.x || 0) + (bounds.width || 0) + 40
       rect.y = bounds.y || 0
@@ -515,18 +520,24 @@ async function insertImageToCanvas(payload: InsertImagePayload) {
 
     sendMsgToUI({
       type: PluginMessage.IMAGE_INSERTED,
-      payload: { success: true },
+      payload: { success: true, requestId },
     })
     sendMsgToUI({
       type: PluginMessage.TOAST,
-      payload: { message: '已成功将 AI 生成图像插入 MasterGo 画布！', messageType: 'success' },
+      payload: { message: '已成功将图像插入 MasterGo 画布！', messageType: 'success' },
     })
+    return true
   } catch (err: any) {
+    sendMsgToUI({
+      type: PluginMessage.IMAGE_INSERTED,
+      payload: { success: false, requestId, error: err?.message || '插图失败' },
+    })
     console.error('插入图片到画布失败:', err)
     sendMsgToUI({
       type: PluginMessage.ERROR,
       payload: { message: `插图失败: ${err?.message || '未知错误'}` },
     })
+    return false
   }
 }
 
@@ -537,7 +548,8 @@ async function insertImageToCanvas(payload: InsertImagePayload) {
  */
 async function insertImagesToCanvas(payload: InsertImagesPayload) {
   for (const image of payload.images) {
-    await insertImageToCanvas(image)
+    const success = await insertImageToCanvas(image, payload.requestId)
+    if (!success && payload.requestId) break
   }
 }
 

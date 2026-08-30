@@ -3295,6 +3295,21 @@ body {
   animation: spinRing 0.8s linear infinite;
 }
 
+.image-context-list button.quick-cutout-active,
+.v2-quick-btn.quick-cutout-active {
+  color: #111111;
+  background: #ECECEC;
+}
+.image-context-list button.quick-cutout-active:disabled,
+.v2-quick-btn.quick-cutout-active:disabled {
+  opacity: 1;
+  cursor: wait;
+}
+.image-context-list button.quick-cutout-active.success,
+.v2-quick-btn.quick-cutout-active.success { background: #E8F7EE; }
+.image-context-list button.quick-cutout-active.error,
+.v2-quick-btn.quick-cutout-active.error { background: #FBECEC; }
+
 .image-context-back {
   height: 28px;
   margin-top: 7px;

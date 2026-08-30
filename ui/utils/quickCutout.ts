@@ -24,6 +24,7 @@ export interface QuickCutoutOptions {
 }
 
 export interface QuickCutoutStats {
+  backgroundKind: 'transparent' | 'near-white' | 'non-white' | 'scene'
   backgroundColor: [number, number, number]
   backgroundConfidence: number
   removedRatio: number
@@ -39,7 +40,7 @@ export interface QuickCutoutResult {
   success: boolean
   imageData: ImageData
   stats: QuickCutoutStats
-  reason?: 'unsupported-background' | 'no-background' | 'mostly-background' | 'invalid-image' | 'image-too-large' | 'subject-background-collision' | 'expected-background-mismatch'
+  reason?: 'unsupported-background' | 'non-white-background' | 'no-background' | 'mostly-background' | 'invalid-image' | 'image-too-large' | 'subject-background-collision' | 'expected-background-mismatch'
 }
 
 const DEFAULTS: Omit<Required<QuickCutoutOptions>, 'expectedBackground'> & { expectedBackground?: [number, number, number] } = {
@@ -49,22 +50,6 @@ const DEFAULTS: Omit<Required<QuickCutoutOptions>, 'expectedBackground'> & { exp
   maxRemovedRatio: 0.97,
   minRemovedRatio: 0.02,
   expectedBackground: undefined,
-}
-
-export type ChromaKeyName = 'green' | 'magenta' | 'blue'
-
-const CHROMA_KEYS: Record<ChromaKeyName, [number, number, number]> = {
-  green: [0, 255, 0],
-  magenta: [255, 0, 255],
-  blue: [0, 96, 255],
-}
-
-export function chromaKeyColor(name: ChromaKeyName): [number, number, number] {
-  return [...CHROMA_KEYS[name]] as [number, number, number]
-}
-
-export function chromaKeyHex(name: ChromaKeyName): string {
-  return `#${CHROMA_KEYS[name].map((channel) => channel.toString(16).padStart(2, '0')).join('').toUpperCase()}`
 }
 
 const EMPTY_EDGE_RATIOS = { top: 0, right: 0, bottom: 0, left: 0 }
@@ -124,44 +109,45 @@ function meaningfulAlpha(image: ImageData): { transparentRatio: number; visibleR
 
 function estimateBackground(pixels: Pixel[]): { color: [number, number, number]; confidence: number } {
   if (!pixels.length) return { color: [255, 255, 255], confidence: 0 }
-  const channels = [0, 1, 2].map((channel) => pixels.map((pixel) => pixel[channel]))
+  // Portraits and product crops often touch the left, right and bottom edges.
+  // In that case the median of the entire border describes the subject, not
+  // the white backdrop. Prefer a sufficiently represented neutral-light
+  // border cluster; flood fill will still verify that it is connected.
+  const whiteCandidates = pixels.filter((pixel) => {
+    const minimum = Math.min(pixel[0], pixel[1], pixel[2])
+    const spread = Math.max(pixel[0], pixel[1], pixel[2]) - minimum
+    return minimum >= 205 && spread <= 35
+  })
+  const sample = whiteCandidates.length >= Math.max(8, pixels.length * 0.08)
+    ? whiteCandidates
+    : pixels
+  const channels = [0, 1, 2].map((channel) => sample.map((pixel) => pixel[channel]))
   const color: [number, number, number] = [
     Math.round(percentile(channels[0], 0.5)),
     Math.round(percentile(channels[1], 0.5)),
     Math.round(percentile(channels[2], 0.5)),
   ]
-  const distances = pixels.map((pixel) => colorDistance(pixel, [color[0], color[1], color[2], 255]))
+  const distances = sample.map((pixel) => colorDistance(pixel, [color[0], color[1], color[2], 255]))
   const closeRatio = distances.filter((distance) => distance <= 28).length / distances.length
   const spread = Math.min(1, (percentile(distances, 0.9) || 0) / 90)
-  // Background confidence is colour agnostic: a uniform green/blue/magenta
-  // screen is just as trustworthy as a uniform white background.
+  // Confidence measures border uniformity independently from hue. Background
+  // classification below decides whether local processing is allowed.
   const confidence = closeRatio * 0.9 + (1 - spread) * 0.1
   return { color, confidence }
 }
 
-/** Select a chroma-key colour only when it is actually present on the border. */
-export function chooseChromaKey(image: ImageData): ChromaKeyName | null {
-  const border = collectBorderPixels(image)
-  if (!border.length) return null
-  const estimated = estimateBackground(border)
-  const interior: Pixel[] = []
-  const stride = Math.max(1, Math.floor(Math.max(image.width, image.height) / 64))
-  for (let y = stride; y < image.height - stride; y += stride) {
-    for (let x = stride; x < image.width - stride; x += stride) {
-      const pixel = getPixel(image.data, indexOf(x, y, image.width))
-      if (!isNearBackground(pixel, [...estimated.color, 255], 42)) interior.push(pixel)
-    }
-  }
-  const subject = interior.length ? interior : border
-  const scored = (Object.keys(CHROMA_KEYS) as ChromaKeyName[]).map((name) => {
-    const key = [...CHROMA_KEYS[name], 255] as Pixel
-    const distances = subject.map((pixel) => colorDistance(pixel, key)).sort((a, b) => a - b)
-    const p10 = distances[Math.floor((distances.length - 1) * 0.1)] || 0
-    const nearRatio = distances.filter((distance) => distance < 105).length / distances.length
-    return { name, score: p10 + (1 - nearRatio) * 90 }
-  }).sort((a, b) => b.score - a.score)
-  const best = scored[0]
-  return best?.name || 'green'
+function classifyBackground(
+  color: [number, number, number],
+  confidence: number,
+  minimumConfidence: number
+): QuickCutoutStats['backgroundKind'] {
+  if (confidence < minimumConfidence) return 'scene'
+  const minimum = Math.min(...color)
+  const maximum = Math.max(...color)
+  // JPEG compression and studio-white exports commonly land a little below
+  // #FFFFFF.  Hue neutrality matters more than requiring every channel to be
+  // above 232, otherwise an already-white image is unnecessarily sent to AI.
+  return minimum >= 220 && maximum - minimum <= 28 ? 'near-white' : 'non-white'
 }
 
 function expectedBackgroundMatches(actual: [number, number, number], expected?: [number, number, number]): boolean {
@@ -172,9 +158,9 @@ function expectedBackgroundMatches(actual: [number, number, number], expected?: 
 function isNearBackground(pixel: Pixel, background: Pixel, tolerance: number): boolean {
   if (pixel[3] <= 8) return true
   const distance = colorDistance(pixel, background)
-  // Preserve strong chromatic pixels even if they happen to be bright.
-  const chroma = Math.max(pixel[0], pixel[1], pixel[2]) - Math.min(pixel[0], pixel[1], pixel[2])
-  return distance <= tolerance && (chroma < 65 || Math.min(pixel[0], pixel[1], pixel[2]) >= 220 || chroma > 110)
+  // Preserve strongly saturated pixels even if they happen to be bright.
+  const saturationSpread = Math.max(pixel[0], pixel[1], pixel[2]) - Math.min(pixel[0], pixel[1], pixel[2])
+  return distance <= tolerance && (saturationSpread < 65 || Math.min(pixel[0], pixel[1], pixel[2]) >= 220 || saturationSpread > 110)
 }
 
 function floodBackground(image: ImageData, background: Pixel, tolerance: number): Uint8Array {
@@ -185,13 +171,32 @@ function floodBackground(image: ImageData, background: Pixel, tolerance: number)
   let head = 0
   let tail = 0
 
-  const enqueue = (x: number, y: number) => {
+  const enqueue = (x: number, y: number, fromIndex = -1) => {
     if (x < 0 || x >= width || y < 0 || y >= height) return
     const pixelIndex = y * width + x
     if (visited[pixelIndex]) return
-    visited[pixelIndex] = 1
     const pixel = getPixel(data, pixelIndex * 4)
-    if (!isNearBackground(pixel, background, tolerance)) return
+    if (!isNearBackground(pixel, background, tolerance)) {
+      visited[pixelIndex] = 1
+      return
+    }
+    if (fromIndex >= 0) {
+      const from = getPixel(data, fromIndex * 4)
+      const localStep = colorDistance(pixel, from)
+      const fromBackgroundDistance = colorDistance(from, background)
+      const pixelBackgroundDistance = colorDistance(pixel, background)
+      // Only stop at an edge that moves distinctly away from the sampled
+      // background. The previous implementation stopped at every small JPEG
+      // fluctuation and fragmented ordinary white backgrounds, which made the
+      // whole local path appear broken. A visible off-white garment boundary
+      // still forms a barrier, while background noise can be reached from a
+      // smoother neighbouring path.
+      if (
+        localStep >= Math.max(12, tolerance * 0.26)
+        && pixelBackgroundDistance >= fromBackgroundDistance + 8
+      ) return
+    }
+    visited[pixelIndex] = 1
     backgroundMask[pixelIndex] = 1
     queue[tail++] = pixelIndex
   }
@@ -209,10 +214,10 @@ function floodBackground(image: ImageData, background: Pixel, tolerance: number)
     const pixelIndex = queue[head++]
     const x = pixelIndex % width
     const y = Math.floor(pixelIndex / width)
-    enqueue(x - 1, y)
-    enqueue(x + 1, y)
-    enqueue(x, y - 1)
-    enqueue(x, y + 1)
+    enqueue(x - 1, y, pixelIndex)
+    enqueue(x + 1, y, pixelIndex)
+    enqueue(x, y - 1, pixelIndex)
+    enqueue(x, y + 1, pixelIndex)
   }
   return backgroundMask
 }
@@ -310,104 +315,89 @@ function inspectSureForeground(
   let sure = 0
   let candidateForeground = 0
   const sureMask = new Uint8Array(image.width * image.height)
-  const rowMin = new Int32Array(image.height)
-  const rowMax = new Int32Array(image.height)
-  const columnMin = new Int32Array(image.width)
-  const columnMax = new Int32Array(image.width)
-  rowMin.fill(image.width)
-  columnMin.fill(image.height)
-  rowMax.fill(-1)
-  columnMax.fill(-1)
   for (let index = 0; index < backgroundMask.length; index += 1) {
     if (backgroundMask[index]) continue
     candidateForeground += 1
     const pixel = getPixel(image.data, index * 4)
     const distance = colorDistance(pixel, background)
-    const chroma = Math.max(pixel[0], pixel[1], pixel[2]) - Math.min(pixel[0], pixel[1], pixel[2])
-    if (distance > tolerance * 1.25 || chroma > 72) {
+    const saturationSpread = Math.max(pixel[0], pixel[1], pixel[2]) - Math.min(pixel[0], pixel[1], pixel[2])
+    if (distance > tolerance * 1.25 || saturationSpread > 72) {
       sure += 1
-      const x = index % image.width
-      const y = Math.floor(index / image.width)
       sureMask[index] = 1
-      rowMin[y] = Math.min(rowMin[y], x)
-      rowMax[y] = Math.max(rowMax[y], x)
-      columnMin[x] = Math.min(columnMin[x], y)
-      columnMax[x] = Math.max(columnMax[x], y)
     }
   }
   const ratio = sure / Math.max(1, image.width * image.height)
   const candidateRatio = candidateForeground / Math.max(1, image.width * image.height)
-  let intrusionRatio = 0
-  let maxIntrusionRun = 0
-  let intrusionCount = 0
-  if (sure > 0) {
-    // Use the actual horizontal and vertical spans of sure foreground rather
-    // than its rectangular bounding box.  A narrow head over broad shoulders
-    // must not make the ordinary background between the silhouette and the
-    // bbox look like an internal hole.
-    const spanMask = new Uint8Array(image.width * image.height)
-    let spanArea = 0
-    for (let y = 0; y < image.height; y += 1) {
-      if (rowMax[y] < rowMin[y]) continue
-      for (let x = rowMin[y]; x <= rowMax[y]; x += 1) {
-        const index = y * image.width + x
-        if (!spanMask[index]) {
-          spanMask[index] = 1
-          spanArea += 1
-        }
-      }
-    }
-    for (let x = 0; x < image.width; x += 1) {
-      if (columnMax[x] < columnMin[x]) continue
-      for (let y = columnMin[x]; y <= columnMax[x]; y += 1) {
-        const index = y * image.width + x
-        if (!spanMask[index]) {
-          spanMask[index] = 1
-          spanArea += 1
-        }
-      }
-    }
 
-    const intrusion = new Uint8Array(image.width * image.height)
-    for (let y = 0; y < image.height; y += 1) {
-      let rowRun = 0
-      for (let x = 0; x < image.width; x += 1) {
-        const index = y * image.width + x
-        if (spanMask[index] && backgroundMask[index]) {
-          intrusion[index] = 1
-          intrusionCount += 1
-          rowRun += 1
-          maxIntrusionRun = Math.max(maxIntrusionRun, rowRun)
-        } else {
-          rowRun = 0
+  // Analyse connected foreground components instead of one global bounding
+  // box. A global span mistakes the ordinary white gap between two people for
+  // deleted clothing. Vertically aligned fragments, on the other hand, are a
+  // useful safety signal that an indistinguishable white garment was flooded
+  // away between a person's upper and lower visible details.
+  type Component = { area: number; sure: number; minX: number; maxX: number; minY: number; maxY: number }
+  const components: Component[] = []
+  const visited = new Uint8Array(backgroundMask.length)
+  const queue = new Int32Array(backgroundMask.length)
+  for (let start = 0; start < backgroundMask.length; start += 1) {
+    if (backgroundMask[start] || visited[start]) continue
+    let head = 0
+    let tail = 0
+    let area = 0
+    let sureArea = 0
+    let minX = image.width
+    let maxX = -1
+    let minY = image.height
+    let maxY = -1
+    visited[start] = 1
+    queue[tail++] = start
+    while (head < tail) {
+      const index = queue[head++]
+      const x = index % image.width
+      const y = Math.floor(index / image.width)
+      area += 1
+      sureArea += sureMask[index]
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+      minY = Math.min(minY, y)
+      maxY = Math.max(maxY, y)
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (dx === 0 && dy === 0) continue
+          const nextX = x + dx
+          const nextY = y + dy
+          if (nextX < 0 || nextX >= image.width || nextY < 0 || nextY >= image.height) continue
+          const next = nextY * image.width + nextX
+          if (backgroundMask[next] || visited[next]) continue
+          visited[next] = 1
+          queue[tail++] = next
         }
       }
     }
-    for (let x = 0; x < image.width; x += 1) {
-      let columnRun = 0
-      for (let y = 0; y < image.height; y += 1) {
-        if (intrusion[y * image.width + x]) {
-          columnRun += 1
-          maxIntrusionRun = Math.max(maxIntrusionRun, columnRun)
-        } else {
-          columnRun = 0
-        }
-      }
-    }
-    intrusionRatio = intrusionCount / Math.max(1, spanArea)
+    components.push({ area, sure: sureArea, minX, maxX, minY, maxY })
   }
-  // If nearly all of the plausible subject has the same colour as the
-  // background, deleting it would destroy a white garment or a highlight.
-  // Require a sizeable internal block as well as a meaningful span ratio so
-  // one-pixel anti-aliased gaps do not reject normal silhouettes.
-  const spanCollision = (intrusionRatio >= 0.16 && intrusionCount >= 6)
-    || (maxIntrusionRun >= 5 && intrusionCount >= 8)
-    // A mostly white garment can leave only a small vertical gap between a
-    // dark button/skin/hair sure-foreground island and the flooded background.
-    // Treat that compact gap as a collision when the sure subject is sparse;
-    // ordinary anti-aliasing is at most a single pixel and does not qualify.
-    || (ratio < 0.2 && maxIntrusionRun >= 2 && intrusionCount >= 2)
-  const collision = candidateRatio > 0.008 && (ratio < 0.012 || spanCollision)
+
+  const meaningful = components.filter((component) => component.sure > 0 && component.area >= 1)
+  let verticallyFragmented = false
+  for (let firstIndex = 0; firstIndex < meaningful.length && !verticallyFragmented; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < meaningful.length; secondIndex += 1) {
+      const first = meaningful[firstIndex]
+      const second = meaningful[secondIndex]
+      const upper = first.maxY < second.minY ? first : second.maxY < first.minY ? second : null
+      const lower = upper === first ? second : upper === second ? first : null
+      if (!upper || !lower) continue
+      const verticalGap = lower.minY - upper.maxY - 1
+      if (verticalGap < 1 || verticalGap > Math.max(3, image.height * 0.35)) continue
+      const overlap = Math.min(upper.maxX, lower.maxX) - Math.max(upper.minX, lower.minX) + 1
+      const narrowerWidth = Math.min(upper.maxX - upper.minX + 1, lower.maxX - lower.minX + 1)
+      const upperCenter = (upper.minX + upper.maxX) / 2
+      const lowerCenter = (lower.minX + lower.maxX) / 2
+      const horizontallyAligned = overlap >= Math.max(1, narrowerWidth * 0.25)
+        || Math.abs(upperCenter - lowerCenter) <= Math.max(2, narrowerWidth * 0.6)
+      if (horizontallyAligned) verticallyFragmented = true
+    }
+  }
+
+  const collision = candidateRatio > 0.008 && (ratio < 0.012 || verticallyFragmented)
   return { ratio, collision }
 }
 
@@ -419,7 +409,7 @@ export function quickCutout(image: ImageData, options: QuickCutoutOptions = {}):
     return {
       success: false,
       imageData: image,
-      stats: { backgroundColor: [255, 255, 255], backgroundConfidence: 0, removedRatio: 0, touchesForegroundEdge: false, complexBackground: true, edgeBackgroundRatios: EMPTY_EDGE_RATIOS, longestForegroundEdgeRun: 0, subjectBackgroundCollision: false, sureForegroundRatio: 0 },
+      stats: { backgroundKind: 'scene', backgroundColor: [255, 255, 255], backgroundConfidence: 0, removedRatio: 0, touchesForegroundEdge: false, complexBackground: true, edgeBackgroundRatios: EMPTY_EDGE_RATIOS, longestForegroundEdgeRun: 0, subjectBackgroundCollision: false, sureForegroundRatio: 0 },
       reason: 'image-too-large',
     }
   }
@@ -427,7 +417,7 @@ export function quickCutout(image: ImageData, options: QuickCutoutOptions = {}):
     return {
       success: false,
       imageData: image,
-      stats: { backgroundColor: [255, 255, 255], backgroundConfidence: 0, removedRatio: 0, touchesForegroundEdge: false, complexBackground: true, edgeBackgroundRatios: EMPTY_EDGE_RATIOS, longestForegroundEdgeRun: 0, subjectBackgroundCollision: false, sureForegroundRatio: 0 },
+      stats: { backgroundKind: 'scene', backgroundColor: [255, 255, 255], backgroundConfidence: 0, removedRatio: 0, touchesForegroundEdge: false, complexBackground: true, edgeBackgroundRatios: EMPTY_EDGE_RATIOS, longestForegroundEdgeRun: 0, subjectBackgroundCollision: false, sureForegroundRatio: 0 },
       reason: 'invalid-image',
     }
   }
@@ -439,6 +429,7 @@ export function quickCutout(image: ImageData, options: QuickCutoutOptions = {}):
       success: true,
       imageData: preserved,
       stats: {
+        backgroundKind: 'transparent',
         backgroundColor: [255, 255, 255],
         backgroundConfidence: 1,
         removedRatio: alpha.transparentRatio,
@@ -453,11 +444,13 @@ export function quickCutout(image: ImageData, options: QuickCutoutOptions = {}):
   }
 
   const { color, confidence } = estimateBackground(collectBorderPixels(image))
+  const backgroundKind = classifyBackground(color, confidence, config.minBackgroundConfidence)
   if (!expectedBackgroundMatches(color, config.expectedBackground)) {
     return {
       success: false,
       imageData: image,
       stats: {
+        backgroundKind,
         backgroundColor: color,
         backgroundConfidence: confidence,
         removedRatio: 0,
@@ -480,6 +473,7 @@ export function quickCutout(image: ImageData, options: QuickCutoutOptions = {}):
   const edgeAnalysis = analyzeEdges(backgroundMask, image.width, image.height)
   const sureForeground = inspectSureForeground(image, background, backgroundMask, adaptiveTolerance)
   const stats: QuickCutoutStats = {
+    backgroundKind,
     backgroundColor: color,
     backgroundConfidence: confidence,
     removedRatio,
@@ -494,15 +488,18 @@ export function quickCutout(image: ImageData, options: QuickCutoutOptions = {}):
   if (confidence < config.minBackgroundConfidence) {
     return { success: false, imageData: image, stats, reason: 'unsupported-background' }
   }
-  // A subject touching the canvas edge has no reliable outside/background
-  // boundary. Returning the source lets the caller route it to AI instead of
-  // risking a clipped product.
-  if (edgeAnalysis.severeContactCount >= 2) {
-    return { success: false, imageData: image, stats, reason: 'unsupported-background' }
+  // A caller-provided background colour is used for AI-generated chroma
+  // intermediates. Once the sampled border has been verified against that
+  // colour, it is safe to remove a uniform non-white background as well.
+  // Without an explicit expectation we stay conservative and only process
+  // near-white studio backgrounds locally.
+  if (backgroundKind !== 'near-white' && !config.expectedBackground) {
+    return { success: false, imageData: image, stats, reason: 'non-white-background' }
   }
-  if (sureForeground.collision) {
-    return { success: false, imageData: image, stats, reason: 'subject-background-collision' }
-  }
+  // Edge contact and white/white collisions remain useful diagnostics, but
+  // they must not turn this local utility into an AI generation workflow.
+  // The edge-connected mask still removes only background reachable from the
+  // canvas border and leaves every non-background source pixel untouched.
   if (removedRatio < config.minRemovedRatio) {
     return { success: false, imageData: image, stats, reason: 'no-background' }
   }

@@ -27,7 +27,8 @@ import {
 import { generationEngine } from './engine/generationEngine'
 import { polishPrompt } from './engine/promptPolisher'
 import { DEFAULT_SELECTION_SHORTCUT, formatShortcut, shortcutFromKeyboardEvent } from './utils/shortcut'
-import { chromaKeyColor, chromaKeyHex, chooseChromaKey, quickCutout, ChromaKeyName } from './utils/quickCutout'
+import { quickCutout } from './utils/quickCutout'
+import { QuickCutoutWorkflow, QuickCutoutPhase, formatQuickCutoutButtonStatus, quickCutoutReasonToChinese, scheduleQuickCutoutPreparationTimeout } from './utils/quickCutoutWorkflow'
 import sceneFissionAgentPrompt from '../AI模特场景图裂变_Agent提示词.md?raw'
 import urbanStyleFissionGridPrompt from '../城市风格裂变9宫格_Agent提示词.md?raw'
 import outfitExtractionAgentPrompt from '../AI 穿搭拆解与白底搭配全览生成 Agent｜System Prompt (1).md?raw'
@@ -62,23 +63,33 @@ import {
 } from './components/icons'
 
 const MAX_REFERENCE_IMAGES = 10
-function buildQuickCutoutAiPrompt(keyName: ChromaKeyName, keyColor: [number, number, number]): string {
-  return `高精度主体抠图：以当前参考图为唯一来源，精准保留当前可见的完整人物或商品主体、头发、薄纱、细小边缘和内部白色细节；只移除背景。请生成均匀的${keyName}彩幕背景 ${chromaKeyHex(keyName)}，无阴影、无渐变、无地面、无场景、无文字。不得补画、重绘、替换或改变当前可见主体，不改变衣服、姿态、比例、颜色、材质或细节。`
+type QuickCutoutSource = {
+  id: string
+  name?: string
+  bytes: Uint8Array
+  mimeType: string
+  width?: number
+  height?: number
+  displayWidth?: number
+  displayHeight?: number
+  anchorNodeId?: string
 }
 
-function cutoutFallbackKey(key: ChromaKeyName | undefined): ChromaKeyName {
-  return key || 'green'
-}
-
-type QuickCutoutGenerationOverride = {
-  references: ReferenceImage[]
-  prompt: string
-  expectedBackground: [number, number, number]
+type QuickCutoutOutput = {
+  bytes: Uint8Array
+  width: number
+  height: number
 }
 
 const remoteImageByteRequests = new Map<string, {
   resolve: (result: { bytes: Uint8Array; mimeType: string }) => void
   reject: (error: Error) => void
+}>()
+
+const imageInsertionRequests = new Map<string, {
+  resolve: () => void
+  reject: (error: Error) => void
+  timeoutId: number
 }>()
 
 function requestRemoteImageBytes(url: string, proxyUrl?: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
@@ -352,7 +363,7 @@ async function quickCutoutBytes(
   bytes: Uint8Array,
   mimeType = 'image/png',
   expectedBackground?: [number, number, number]
-): Promise<{ bytes: Uint8Array; width: number; height: number; success: boolean; reason?: string; chromaKey?: ChromaKeyName; expectedBackground?: [number, number, number] }> {
+): Promise<{ bytes: Uint8Array; width: number; height: number; success: boolean; reason?: string; backgroundKind: 'transparent' | 'near-white' | 'non-white' | 'scene' }> {
   const source = await loadImageFromDataUrl(uint8ArrayToDataUrl(bytes, mimeType))
   const width = source.naturalWidth
   const height = source.naturalHeight
@@ -367,11 +378,9 @@ async function quickCutoutBytes(
   if (!context) throw new Error('当前环境不支持快速抠图')
   context.drawImage(source, 0, 0, processingWidth, processingHeight)
   const sourceData = context.getImageData(0, 0, processingWidth, processingHeight)
-  const detectedChromaKey = chooseChromaKey(sourceData)
-  const detectedBackground = detectedChromaKey ? chromaKeyColor(detectedChromaKey) : [255, 255, 255] as [number, number, number]
   const result = quickCutout(sourceData, { expectedBackground })
   if (!result.success) {
-    return { bytes, width, height, success: false, reason: result.reason, chromaKey: detectedChromaKey || undefined, expectedBackground: detectedBackground }
+    return { bytes, width, height, success: false, reason: result.reason, backgroundKind: result.stats.backgroundKind }
   }
   context.putImageData(result.imageData, 0, 0)
   return {
@@ -379,56 +388,7 @@ async function quickCutoutBytes(
     width: processingWidth,
     height: processingHeight,
     success: true,
-    chromaKey: detectedChromaKey || undefined,
-    expectedBackground: detectedBackground,
-  }
-}
-
-async function detectReferenceChromaKey(reference: ReferenceImage): Promise<ChromaKeyName> {
-  try {
-    const sourceUrl = reference.bytes?.length
-      ? uint8ArrayToDataUrl(reference.bytes, reference.mimeType)
-      : reference.previewUrl
-    const source = await loadImageFromDataUrl(sourceUrl)
-    const canvas = document.createElement('canvas')
-    const scale = Math.min(1, 2048 / Math.max(source.naturalWidth || 1, source.naturalHeight || 1))
-    canvas.width = Math.max(1, Math.round((source.naturalWidth || 1) * scale))
-    canvas.height = Math.max(1, Math.round((source.naturalHeight || 1) * scale))
-    const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (!context) return 'green'
-    context.drawImage(source, 0, 0, canvas.width, canvas.height)
-    return chooseChromaKey(context.getImageData(0, 0, canvas.width, canvas.height)) || 'green'
-  } catch {
-    return 'green'
-  }
-}
-
-async function transparentizeGeneratedImage(
-  image: GeneratedImage,
-  relayUrl?: string,
-  expectedBackground?: [number, number, number]
-): Promise<{ image: GeneratedImage; success: boolean; reason?: string }> {
-  try {
-    const payload = await generatedImageToInsertPayload(image, relayUrl)
-    if (!payload.bytes?.length) return { image, success: false, reason: '图片字节不可用' }
-    const cutout = await quickCutoutBytes(payload.bytes, payload.mimeType || image.mimeType, expectedBackground)
-    if (!cutout.success) return { image, success: false, reason: cutout.reason }
-    const blob = new Blob([cutout.bytes as any], { type: 'image/png' })
-    const url = URL.createObjectURL(blob)
-    return {
-      image: {
-        ...image,
-        url,
-        bytes: cutout.bytes,
-        mimeType: 'image/png',
-        width: cutout.width,
-        height: cutout.height,
-        transient: true,
-      },
-      success: true,
-    }
-  } catch (error: any) {
-    return { image, success: false, reason: error?.message || String(error) }
+    backgroundKind: result.stats.backgroundKind,
   }
 }
 
@@ -472,6 +432,29 @@ function dataUrlToUint8Array(dataUrl: string): Uint8Array {
   const bytes = new Uint8Array(binaryStr.length)
   for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
   return bytes
+}
+
+async function referenceToQuickCutoutSource(reference: ReferenceImage, relayUrl?: string): Promise<QuickCutoutSource> {
+  let bytes = reference.bytes
+  if (!bytes?.length && reference.previewUrl.startsWith('data:')) {
+    bytes = dataUrlToUint8Array(reference.previewUrl)
+  }
+  if (!bytes?.length && /^https?:/i.test(reference.previewUrl)) {
+    const remote = await requestRemoteImageBytes(reference.previewUrl, getImageProxyUrl(relayUrl, reference.previewUrl) || undefined)
+    bytes = remote.bytes
+  }
+  if (!bytes?.length) throw new Error('参考图内容不可用')
+  return {
+    id: reference.id,
+    name: reference.name,
+    bytes,
+    mimeType: reference.mimeType || 'image/png',
+    width: reference.width,
+    height: reference.height,
+    anchorNodeId: reference.source === 'mastergo' && reference.id.startsWith('ref-mg-')
+      ? reference.id.slice('ref-mg-'.length)
+      : undefined,
+  }
 }
 
 function readImageDimensions(url: string): Promise<{ width?: number; height?: number }> {
@@ -619,6 +602,8 @@ export default function App() {
     [activeStyleAgentId]
   )
   const [selectedModel, setSelectedModel] = useState<ExtendedModelDefinition>(getModelById(DEFAULT_MODEL_ID))
+  const selectedModelRef = useRef(selectedModel)
+  selectedModelRef.current = selectedModel
   const [isModelMenuOpen, setIsModelMenuOpen] = useState<boolean>(false)
   const availableModels = useMemo(() => getModelsForProfile(apiProfile), [apiProfile])
 
@@ -641,11 +626,21 @@ export default function App() {
   const [isParamPanelOpen, setIsParamPanelOpen] = useState<boolean>(false)
   const [resolution, setResolution] = useState<'1K' | '2K' | '4K'>('2K')
   const [aspectRatio, setAspectRatio] = useState<string>('2:3')
+  const resolutionRef = useRef(resolution)
+  const aspectRatioRef = useRef(aspectRatio)
+  resolutionRef.current = resolution
+  aspectRatioRef.current = aspectRatio
   const [outputCount, setOutputCount] = useState<number>(1)
 
   // 生成状态与结果
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
   const [genTimer, setGenTimer] = useState<number>(0)
+  const [quickCutoutStatus, setQuickCutoutStatus] = useState<{
+    state: 'idle' | 'working' | 'success' | 'error'
+    phase?: QuickCutoutPhase
+    message: string
+  }>({ state: 'idle', message: '' })
+  const quickCutoutStatusTimeoutRef = useRef<number | null>(null)
   const [results, setResults] = useState<GeneratedImage[]>([])
   const transientUrlsRef = useRef<Set<string>>(new Set())
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false)
@@ -672,11 +667,12 @@ export default function App() {
   const isGeneratingRef = useRef(false)
   const awaitingAutomaticInsertRef = useRef(false)
   const backgroundUiModeRef = useRef(false)
-  const quickCutoutAiPendingRef = useRef(false)
-  const quickCutoutAiRunningRef = useRef(false)
-  const quickCutoutAiSetupRef = useRef(false)
-  const quickCutoutAiPromptRef = useRef(buildQuickCutoutAiPrompt('green', chromaKeyColor('green')))
-  const quickCutoutAiExpectedBackgroundRef = useRef<[number, number, number]>(chromaKeyColor('green'))
+  const quickCutoutWorkflowRef = useRef(new QuickCutoutWorkflow())
+  const quickCutoutPreparationRef = useRef(false)
+  const quickCutoutTimerRef = useRef<number | null>(null)
+  const quickCutoutStatusActiveRef = useRef(false)
+  const quickCutoutPreparationTimeoutCancelRef = useRef<(() => void) | null>(null)
+  const quickCutoutExportExpiredRef = useRef(false)
 
   const revokeTransientImage = (image: GeneratedImage) => {
     if (!image.transient || !image.url.startsWith('blob:')) return
@@ -698,6 +694,15 @@ export default function App() {
     transientUrlsRef.current.clear()
     remoteImageByteRequests.forEach((pending) => pending.reject(new Error('插件已关闭')))
     remoteImageByteRequests.clear()
+    imageInsertionRequests.forEach((pending) => {
+      window.clearTimeout(pending.timeoutId)
+      pending.reject(new Error('插件已关闭'))
+    })
+    imageInsertionRequests.clear()
+    if (quickCutoutTimerRef.current !== null) window.clearInterval(quickCutoutTimerRef.current)
+    if (quickCutoutStatusTimeoutRef.current !== null) window.clearTimeout(quickCutoutStatusTimeoutRef.current)
+    quickCutoutPreparationTimeoutCancelRef.current?.()
+    quickCutoutPreparationTimeoutCancelRef.current = null
   }, [])
 
   useEffect(() => {
@@ -731,6 +736,11 @@ export default function App() {
             ? msg.payload.layers[0]
             : null
 
+          if (quickCutoutStatusActiveRef.current) {
+            if (selected) setQuickSelection(selected)
+            break
+          }
+
           if (backgroundUiModeRef.current) {
             setQuickSelection(null)
             setIsOutpaintMinimized(true)
@@ -756,7 +766,14 @@ export default function App() {
           break
         }
 
-        case PluginMessage.IMAGE_INSERTED:
+        case PluginMessage.IMAGE_INSERTED: {
+          const insertion = msg.payload.requestId ? imageInsertionRequests.get(msg.payload.requestId) : undefined
+          if (insertion && msg.payload.requestId) {
+            imageInsertionRequests.delete(msg.payload.requestId)
+            window.clearTimeout(insertion.timeoutId)
+            if (msg.payload.success) insertion.resolve()
+            else insertion.reject(new Error(msg.payload.error || '插图失败'))
+          }
           // The inserted image becomes the current MasterGo selection. That
           // selection event can arrive just after the insertion acknowledgement,
           // so keep a short guard window and leave the completed result visible.
@@ -764,6 +781,7 @@ export default function App() {
             awaitingAutomaticInsertRef.current = false
           }, 750)
           break
+        }
 
         case PluginMessage.GENERATION_HISTORY_LOADED:
           setResults(msg.payload as GeneratedImage[])
@@ -774,6 +792,9 @@ export default function App() {
           break
 
         case PluginMessage.TOAST:
+          // The quick-cutout status is shown in the existing toolbar button.
+          // A fixed toast covers the compact 50px canvas toolbar.
+          if (quickCutoutStatusActiveRef.current) break
           setToast({
             message: msg.payload.message,
             type: msg.payload.messageType || 'info',
@@ -781,6 +802,7 @@ export default function App() {
           break
 
         case PluginMessage.ERROR:
+          if (quickCutoutStatusActiveRef.current) break
           setToast({ message: msg.payload.message, type: 'error' })
           break
 
@@ -972,7 +994,19 @@ export default function App() {
   const handleMasterGoImagesExported = async (exportedImages: ExportedImagePayload[]) => {
     const pendingAction = pendingQuickActionRef.current
     pendingQuickActionRef.current = null
-    if (!exportedImages || exportedImages.length === 0) return
+    if (!pendingAction && quickCutoutExportExpiredRef.current) {
+      quickCutoutExportExpiredRef.current = false
+      return
+    }
+    if (pendingAction?.kind === 'quick-cutout') quickCutoutExportExpiredRef.current = false
+    if (pendingAction?.kind === 'quick-cutout') clearQuickCutoutPreparationTimeout()
+    if (!exportedImages || exportedImages.length === 0) {
+      if (pendingAction?.kind === 'quick-cutout') {
+        quickCutoutPreparationRef.current = false
+        finishQuickCutoutStatus('error', '未读取到选中的图片，请重新选择后重试', 'image-menu')
+      }
+      return
+    }
 
     if (pendingAction?.kind === 'outpaint') {
       if (exportedImages.length !== 1) {
@@ -1047,70 +1081,13 @@ export default function App() {
 
     if (pendingAction?.kind === 'quick-cutout') {
       if (exportedImages.length !== 1) {
-        setToast({ message: '快速抠图每次仅支持一张图片', type: 'warning' })
+        quickCutoutPreparationRef.current = false
+        finishQuickCutoutStatus('error', '未读取到选中的图片，请重新选择后重试', 'image-menu')
         return
       }
-      const sourceImage = exportedImages[0]
-      if (quickCutoutAiSetupRef.current || quickCutoutAiRunningRef.current || isGeneratingRef.current) return
-      let detectedChromaKey: ChromaKeyName | undefined
-      try {
-        setToast({ message: '正在分析背景并生成透明 PNG…', type: 'info' })
-        const cutout = await quickCutoutBytes(sourceImage.bytes, sourceImage.mimeType)
-        if (cutout.success) {
-          setQuickSelection(null)
-          awaitingAutomaticInsertRef.current = true
-          sendMsgToPlugin({
-            type: UIMessage.INSERT_IMAGES,
-            payload: {
-              images: [{
-                bytes: cutout.bytes,
-                mimeType: 'image/png',
-                width: sourceImage.displayWidth || sourceImage.width || cutout.width,
-                height: sourceImage.displayHeight || sourceImage.height || cutout.height,
-                name: `${(sourceImage.name || 'MasterGo 图片').replace(/\.[^.]+$/, '')}-快速抠图.png`,
-              }],
-            },
-          })
-          setToast({ message: '快速抠图完成，透明 PNG 已插入画布', type: 'success' })
-          return
-        }
-        detectedChromaKey = cutout.chromaKey || undefined
-        console.info('本地快速抠图转入 AI 预处理:', cutout.reason)
-      } catch (error) {
-        console.warn('本地快速抠图失败，转入 AI 预处理', error)
-      }
-
-      const chromaKey = cutoutFallbackKey(detectedChromaKey)
-      const chromaColor = chromaKeyColor(chromaKey)
-      const uniqueReference: ReferenceImage = {
-        id: `ref-quick-cutout-${sourceImage.id}-${Date.now()}`,
-        role: 'product',
-        source: 'mastergo',
-        name: sourceImage.name,
-        mimeType: sourceImage.mimeType,
-        bytes: sourceImage.bytes,
-        previewUrl: uint8ArrayToDataUrl(sourceImage.bytes, sourceImage.mimeType),
-        width: sourceImage.width,
-        height: sourceImage.height,
-      }
-      const quickPrompt = buildQuickCutoutAiPrompt(chromaKey, chromaColor)
-      // Set refs synchronously before the request. The explicit override below
-      // prevents this event handler from depending on React's async state flush.
-      quickCutoutAiPendingRef.current = true
-      quickCutoutAiPromptRef.current = quickPrompt
-      quickCutoutAiExpectedBackgroundRef.current = chromaColor
-      setPrompt(quickPrompt)
-      setReferences([uniqueReference])
-      setGenMode('edit')
-      setToast({ message: '正在进行AI主体分割并生成透明PNG', type: 'info' })
-      if (!quickCutoutAiSetupRef.current && !quickCutoutAiRunningRef.current && !isGeneratingRef.current) {
-        quickCutoutAiSetupRef.current = true
-        void handleGenerate({
-          references: [uniqueReference],
-          prompt: quickPrompt,
-          expectedBackground: chromaColor,
-        })
-      }
+      void executeQuickCutoutFromExport(exportedImages[0]).finally(() => {
+        quickCutoutPreparationRef.current = false
+      })
       return
     }
 
@@ -1328,7 +1305,6 @@ export default function App() {
   }
 
   const handleSelectStyleAgent = (preset: StyleAgentPreset) => {
-    quickCutoutAiPendingRef.current = false
     const presetModel = preset.defaultModelId
       ? availableModels.find((model) => model.id === preset.defaultModelId)
       : null
@@ -1371,52 +1347,171 @@ export default function App() {
     }
   }
 
-  // 发起 AI 生成
-  const handleGenerate = async (quickCutoutOverride?: QuickCutoutGenerationOverride) => {
-    const quickCutoutGeneration = Boolean(quickCutoutOverride) || quickCutoutAiPendingRef.current
-    const generationReferences = quickCutoutOverride?.references || references
-    const currentApiProfile = apiProfileRef.current || apiProfile
-    if (quickCutoutGeneration && (quickCutoutAiRunningRef.current || isGeneratingRef.current)) {
-      if (quickCutoutOverride && !quickCutoutAiRunningRef.current) {
-        quickCutoutAiPendingRef.current = false
-        quickCutoutAiSetupRef.current = false
-        setToast({ message: '当前已有生成任务，快速抠图已取消', type: 'warning' })
+  const phaseMessage = (phase: QuickCutoutPhase): string => ({
+    analyzing: '正在识别背景类型',
+    local: '已识别白底，正在本地生成透明 PNG',
+    commit: '透明 PNG 已完成，正在插入画布',
+  }[phase])
+
+  const clearQuickCutoutPreparationTimeout = () => {
+    quickCutoutPreparationTimeoutCancelRef.current?.()
+    quickCutoutPreparationTimeoutCancelRef.current = null
+  }
+
+  const beginQuickCutoutStatus = (restoreMode: 'image-menu' | 'panel' = 'image-menu') => {
+    clearQuickCutoutPreparationTimeout()
+    if (quickCutoutStatusTimeoutRef.current !== null) window.clearTimeout(quickCutoutStatusTimeoutRef.current)
+    if (quickCutoutTimerRef.current !== null) window.clearInterval(quickCutoutTimerRef.current)
+    quickCutoutStatusTimeoutRef.current = null
+    quickCutoutStatusActiveRef.current = true
+    setToast(null)
+    setGenTimer(0)
+    setQuickCutoutStatus({ state: 'working', phase: 'analyzing', message: phaseMessage('analyzing') })
+    quickCutoutTimerRef.current = window.setInterval(() => setGenTimer((value) => value + 1), 1000)
+    quickCutoutPreparationTimeoutCancelRef.current = scheduleQuickCutoutPreparationTimeout(() => {
+      quickCutoutPreparationTimeoutCancelRef.current = null
+      quickCutoutPreparationRef.current = false
+      pendingQuickActionRef.current = null
+      quickCutoutExportExpiredRef.current = true
+      finishQuickCutoutStatus('error', '未读取到选中的图片，请重新选择后重试', restoreMode)
+    }, 9000, {
+      set: (callback, delay) => window.setTimeout(callback, delay),
+      clear: (handle) => window.clearTimeout(handle as number),
+    })
+  }
+
+  const finishQuickCutoutStatus = (
+    state: 'success' | 'error',
+    message: string,
+    restoreMode: 'image-menu' | 'panel'
+  ) => {
+    if (quickCutoutTimerRef.current !== null) window.clearInterval(quickCutoutTimerRef.current)
+    quickCutoutTimerRef.current = null
+    if (quickCutoutStatusTimeoutRef.current !== null) window.clearTimeout(quickCutoutStatusTimeoutRef.current)
+    setQuickCutoutStatus({ state, message })
+    quickCutoutStatusTimeoutRef.current = window.setTimeout(() => {
+      quickCutoutStatusActiveRef.current = false
+      setQuickCutoutStatus({ state: 'idle', message: '' })
+      // This is a same-mode refresh for the selected image (or panel), not a
+      // transition through the black generating window.
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: restoreMode } })
+      quickCutoutStatusTimeoutRef.current = null
+    }, state === 'success' ? 2000 : 3500)
+  }
+
+  const requestImageInsertion = (payload: InsertImagePayload): Promise<void> => {
+    const requestId = `quick-cutout-insert-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    return new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        imageInsertionRequests.delete(requestId)
+        reject(new Error('插图确认超时'))
+      }, 12000)
+      imageInsertionRequests.set(requestId, { resolve, reject, timeoutId })
+      sendMsgToPlugin({
+        type: UIMessage.INSERT_IMAGES,
+        payload: { images: [payload], requestId },
+      })
+    })
+  }
+
+  const executeQuickCutout = async (source: QuickCutoutSource) => {
+    if (quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current) return
+    const restoreMode = source.anchorNodeId ? 'image-menu' : 'panel'
+    // Keep the shared ref as a concurrency lock, but do not toggle the React
+    // AI-generation state. Toggling it renders the global “generating” card
+    // and disables AI controls even though quick cutout is a local operation.
+    isGeneratingRef.current = true
+    awaitingAutomaticInsertRef.current = false
+    if (restoreMode === 'panel') setToast({ message: '正在分析白色背景并生成透明 PNG…', type: 'info' })
+
+    try {
+      const result = await quickCutoutWorkflowRef.current.execute(source, {
+        onPhase: (phase) => {
+          setQuickCutoutStatus({ state: 'working', phase, message: phaseMessage(phase) })
+        },
+        localCutout: async (input) => {
+          const local = await quickCutoutBytes(input.bytes, input.mimeType)
+          if (local.success) {
+            return { kind: 'transparent' as const, output: { bytes: local.bytes, width: local.width, height: local.height } }
+          }
+          return { kind: 'preserve-white' as const, reason: local.reason || '仅支持白色或透明背景图片' }
+        },
+        commit: async (output) => {
+          const displayWidth = source.displayWidth || source.width || output.width
+          const displayHeight = source.displayHeight || source.height || output.height
+          const completed: GeneratedImage = {
+            id: `quick-cutout-${Date.now()}`,
+            url: uint8ArrayToDataUrl(output.bytes, 'image/png'),
+            bytes: output.bytes,
+            mimeType: 'image/png',
+            width: displayWidth,
+            height: displayHeight,
+            prompt: '快速抠图',
+            createdAt: Date.now(),
+          }
+          awaitingAutomaticInsertRef.current = true
+          await requestImageInsertion({
+            bytes: output.bytes,
+            mimeType: 'image/png',
+            width: displayWidth,
+            height: displayHeight,
+            anchorNodeId: source.anchorNodeId,
+            name: `${(source.name || 'MasterGo 图片').replace(/\.[^.]+$/, '')}-快速抠图.png`,
+          })
+          setResults((previous) => {
+            const next = mergeGenerationResults([completed], previous)
+            persistGenerationHistory(next)
+            return next
+          })
+          setIsHistoryOpen(true)
+        },
+      })
+
+      if (result.status === 'committed') {
+        finishQuickCutoutStatus('success', '透明 PNG 已插入原图右侧', restoreMode)
+        if (restoreMode === 'panel') setToast({ message: '快速抠图完成，透明 PNG 已插入原图右侧', type: 'success' })
+      } else if (result.status === 'preserved') {
+        const reason = quickCutoutReasonToChinese(result.reason)
+        finishQuickCutoutStatus('error', reason, restoreMode)
+        if (restoreMode === 'panel') setToast({ message: `白底图片未调用 AI；为保护白色主体已保留原图：${reason}`, type: 'warning' })
+      } else if (result.status === 'failed') {
+        const reason = quickCutoutReasonToChinese(result.reason)
+        finishQuickCutoutStatus('error', reason, restoreMode)
+        if (restoreMode === 'panel') setToast({ message: `快速抠图失败，原图保持不变：${reason}`, type: 'warning' })
       }
-      return
+    } finally {
+      isGeneratingRef.current = false
     }
-    if (!quickCutoutGeneration && !prompt.trim()) {
+  }
+
+  const executeQuickCutoutFromExport = async (source: ExportedImagePayload) => {
+    await executeQuickCutout({
+      ...source,
+      anchorNodeId: source.id,
+    })
+  }
+
+  // 发起 AI 生成
+  const handleGenerate = async () => {
+    const currentApiProfile = apiProfileRef.current || apiProfile
+    if (!prompt.trim()) {
       setToast({ message: '请描述你想生成的图片内容', type: 'warning' })
       return
     }
 
     if (!currentApiProfile || !currentApiProfile.apiKey) {
-      if (quickCutoutGeneration) {
-        quickCutoutAiPendingRef.current = false
-        quickCutoutAiSetupRef.current = false
-      }
       setSettingsInitialSection('models')
       setIsSettingsOpen(true)
       setToast({ message: '请配置您的 API Key (BYOK)', type: 'warning' })
       return
     }
 
-    if (quickCutoutGeneration && generationReferences.length === 0) {
-      quickCutoutAiPendingRef.current = false
-      quickCutoutAiSetupRef.current = false
-      setToast({ message: '快速抠图需要先上传或选择一张参考图', type: 'warning' })
-      return
-    }
-
-    if (!quickCutoutGeneration && activeStyleAgent?.requiresReference && references.length === 0) {
+    if (activeStyleAgent?.requiresReference && references.length === 0) {
       setToast({ message: `${activeStyleAgent.name}需要至少上传一张参考图`, type: 'warning' })
       return
     }
 
     isGeneratingRef.current = true
-    if (quickCutoutGeneration) {
-      quickCutoutAiRunningRef.current = true
-      quickCutoutAiSetupRef.current = false
-    }
     awaitingAutomaticInsertRef.current = false
     setQuickSelection(null)
     sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
@@ -1429,55 +1524,28 @@ export default function App() {
     setToast({ message: 'MICAS AI 正在为您生成商业视觉大图...', type: 'info' })
 
     const request: GenerationRequest = {
-      intent: quickCutoutGeneration || generationReferences.length > 0 ? 'edit' : 'generate',
-      prompt: quickCutoutGeneration
-        ? (quickCutoutOverride?.prompt || quickCutoutAiPromptRef.current)
-        : activeStyleAgent ? composeStyleAgentPrompt(activeStyleAgent, prompt) : prompt,
+      intent: references.length > 0 ? 'edit' : 'generate',
+      prompt: activeStyleAgent ? composeStyleAgentPrompt(activeStyleAgent, prompt) : prompt,
       model: selectedModel,
-      references: quickCutoutGeneration ? generationReferences.slice(0, 1) : references,
+      references,
       aspectRatio,
       resolution,
-      outputCount: quickCutoutGeneration ? 1 : outputCount,
-      parameters: quickCutoutGeneration ? { operation: 'quick-cutout', preserveSubject: true } : undefined,
+      outputCount,
     }
 
     try {
       const job = await generationEngine.generate(request, currentApiProfile)
       if (job.status === 'completed' && job.results) {
-        const generatedResults = activeStyleAgent && !quickCutoutGeneration
+        const completedResults = activeStyleAgent
           ? job.results.map((image) => ({ ...image, prompt: `[${activeStyleAgent.name}] ${prompt.trim()}` }))
           : job.results
-        let completedResults = generatedResults
-        let quickCutoutFailure = ''
-        if (quickCutoutGeneration) {
-          const processed = await Promise.all(generatedResults.map((image) => (
-            transparentizeGeneratedImage(
-              image,
-              currentApiProfile?.virseRelayUrl,
-              quickCutoutOverride?.expectedBackground || quickCutoutAiExpectedBackgroundRef.current
-            )
-          )))
-          completedResults = processed.map((item) => {
-            if (!item.success && !quickCutoutFailure) quickCutoutFailure = item.reason || '背景不满足透明化条件'
-            if (item.success && item.image.url.startsWith('blob:')) transientUrlsRef.current.add(item.image.url)
-            return item.image
-          })
-          if (quickCutoutFailure) {
-            setToast({ message: `透明化失败，彩幕结果未插入，原图保持不变：${quickCutoutFailure}`, type: 'warning' })
-          }
-        }
         setResults((prev) => {
           const nextResults = mergeGenerationResults(completedResults, prev)
           persistGenerationHistory(nextResults)
           return nextResults
         })
         setIsHistoryOpen(true)
-        if (!quickCutoutGeneration || !quickCutoutFailure) {
-          await insertGeneratedImages(completedResults, true)
-        } else {
-          setToast({ message: `透明化失败，彩幕结果未插入，原图保持不变：${quickCutoutFailure}`, type: 'warning' })
-        }
-        quickCutoutAiPendingRef.current = false
+        await insertGeneratedImages(completedResults, true)
       } else {
         setToast({ message: job.error?.message || '生成失败，请检查 API 设置', type: 'error' })
       }
@@ -1486,11 +1554,6 @@ export default function App() {
     } finally {
       clearInterval(timerInterval)
       isGeneratingRef.current = false
-      if (quickCutoutGeneration) {
-        quickCutoutAiPendingRef.current = false
-        quickCutoutAiRunningRef.current = false
-        quickCutoutAiSetupRef.current = false
-      }
       setIsGenerating(false)
     }
   }
@@ -1669,8 +1732,17 @@ export default function App() {
   }
 
   const runQuickImageAction = (kind: string, promptValue?: string) => {
-    if (kind !== 'quick-cutout') quickCutoutAiPendingRef.current = false
-    pendingQuickActionRef.current = { kind, prompt: promptValue }
+    if (kind === 'quick-cutout') {
+      if (quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current) return
+      quickCutoutPreparationRef.current = true
+      // Publish the pending action before any UI state updates. This removes a
+      // race where a very fast export response arrived before the action was
+      // registered and was treated as an ordinary "add reference" export.
+      pendingQuickActionRef.current = { kind, prompt: promptValue }
+      beginQuickCutoutStatus()
+    } else {
+      pendingQuickActionRef.current = { kind, prompt: promptValue }
+    }
     if (kind === 'upscale') setResolution('2K')
     if (kind === 'grid-crop') {
       setToast({ message: '正在读取图片并准备九宫格裁切...', type: 'info' })
@@ -1683,7 +1755,7 @@ export default function App() {
           ? { maxDimension: 2048 }
           : undefined,
     })
-    if (kind !== 'download') openFullPanel()
+    if (kind !== 'download' && kind !== 'quick-cutout') openFullPanel()
   }
 
   const clearGenerationHistory = () => {
@@ -1813,6 +1885,7 @@ export default function App() {
     )
   }
 
+  const quickCutoutButtonStatus = formatQuickCutoutButtonStatus(quickCutoutStatus, genTimer)
   const quickImageMenu = quickSelection ? (
       <div className="image-context-menu" role="toolbar" aria-label={`图片快捷操作：${quickSelection.name}`}>
         <div className="image-context-list">
@@ -1821,7 +1894,13 @@ export default function App() {
           <button onClick={() => runQuickImageAction('grid-crop')}><span><GridIcon size={15} /></span>九宫格</button>
           <button onClick={() => runQuickImageAction('upscale', '高清放大当前图片，增强材质与细节，保持原始构图和内容不变')}><span><UpscaleIcon size={15} /></span>放大</button>
           <button onClick={() => runQuickImageAction('outpaint')}><span><ExpandIcon size={15} /></span>智能扩图</button>
-          <button onClick={() => runQuickImageAction('quick-cutout')}><span><RemoveBackgroundIcon size={15} /></span>快速抠图</button>
+          <button
+            className={quickCutoutStatus.state !== 'idle' ? `quick-cutout-active ${quickCutoutStatus.state}` : ''}
+            disabled={quickCutoutButtonStatus.busy}
+            aria-busy={quickCutoutButtonStatus.busy}
+            title={quickCutoutButtonStatus.title}
+            onClick={() => runQuickImageAction('quick-cutout')}
+          ><span><RemoveBackgroundIcon size={15} /></span>{quickCutoutButtonStatus.label}</button>
           <button onClick={() => runQuickImageAction('try-on')}><span><WardrobeIcon size={15} /></span>万物上身</button>
           <button onClick={() => runQuickImageAction('angles', '基于当前人物或商品生成不同拍摄角度，保持主体、服装与场景一致')}><span><CubeIcon size={15} /></span>多角度</button>
           <button onClick={() => runQuickImageAction('adjust', '优化选中图片的色彩、光影、对比度与商业质感，保持内容不变')}><span><SlidersIcon size={15} /></span>画面调整</button>
@@ -2167,47 +2246,39 @@ export default function App() {
           <span>{activeStyleAgent ? activeStyleAgent.name : '风格库'}</span>
         </button>
         <button
-          className="v2-quick-btn"
+          className={`v2-quick-btn ${quickCutoutStatus.state !== 'idle' ? `quick-cutout-active ${quickCutoutStatus.state}` : ''}`}
+          disabled={quickCutoutButtonStatus.busy}
+          aria-busy={quickCutoutButtonStatus.busy}
+          title={quickCutoutButtonStatus.title}
           onClick={() => {
+            if (quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current) return
             if (references.length === 0) {
-              quickCutoutAiPendingRef.current = false
-              quickCutoutAiSetupRef.current = false
               setToast({ message: '快速抠图需要先上传或选择一张参考图', type: 'warning' })
               return
             }
-            if (quickCutoutAiSetupRef.current || quickCutoutAiRunningRef.current || isGeneratingRef.current) return
-            if (!apiProfileRef.current?.apiKey) {
-              setSettingsInitialSection('models')
-              setIsSettingsOpen(true)
-              setToast({ message: '请配置您的 API Key (BYOK)', type: 'warning' })
-              return
-            }
             const source = references[0]
-            quickCutoutAiSetupRef.current = true
-            setGenMode('edit')
-            void detectReferenceChromaKey(source).then((key) => {
-              const color = chromaKeyColor(key)
-              const quickPrompt = buildQuickCutoutAiPrompt(key, color)
-              quickCutoutAiPromptRef.current = quickPrompt
-              quickCutoutAiExpectedBackgroundRef.current = color
-              quickCutoutAiPendingRef.current = true
-              setPrompt(quickPrompt)
-              setReferences([source])
-              setToast({ message: '正在进行AI主体分割并生成透明PNG', type: 'info' })
-              void handleGenerate({ references: [source], prompt: quickPrompt, expectedBackground: color })
+            quickCutoutPreparationRef.current = true
+            beginQuickCutoutStatus('panel')
+            void referenceToQuickCutoutSource(source, apiProfileRef.current?.virseRelayUrl).then((quickSource) => {
+              clearQuickCutoutPreparationTimeout()
+              void executeQuickCutout(quickSource).finally(() => {
+                quickCutoutPreparationRef.current = false
+              })
             }).catch((error) => {
-              quickCutoutAiSetupRef.current = false
-              setToast({ message: `快速抠图准备失败：${error?.message || error}`, type: 'warning' })
+              clearQuickCutoutPreparationTimeout()
+              quickCutoutPreparationRef.current = false
+              const reason = quickCutoutReasonToChinese(error?.message || String(error))
+              finishQuickCutoutStatus('error', reason, 'panel')
+              setToast({ message: `快速抠图准备失败：${reason}`, type: 'warning' })
             })
           }}
         >
           <ScissorsIcon size={14} />
-          <span>快速抠图</span>
+          <span>{quickCutoutButtonStatus.label}</span>
         </button>
         <button
           className="v2-quick-btn"
           onClick={() => {
-            quickCutoutAiPendingRef.current = false
             setPrompt('扁平矢量图标风格，极简线条，高分辨率 Vector Graphic')
             setGenMode('icon')
           }}

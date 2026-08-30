@@ -59,10 +59,14 @@ export interface InsertImagePayload {
   width?: number
   height?: number
   name?: string
+  /** Keep placement relative to the original node even if selection changes. */
+  anchorNodeId?: string
 }
 
 export interface InsertImagesPayload {
   images: InsertImagePayload[]
+  /** Correlates an insertion request with its main-thread acknowledgement. */
+  requestId?: string
 }
 
 export interface InsertImageGridPayload {
@@ -153,7 +157,7 @@ export type PluginMessageData =
   | { type: PluginMessage.SELECTION_IMAGE_EXPORTED; payload: ExportedImagePayload[] }
   | { type: PluginMessage.API_PROFILE_LOADED; payload: ApiProfile | null }
   | { type: PluginMessage.API_PROFILE_SAVED; payload: { success: boolean } }
-  | { type: PluginMessage.IMAGE_INSERTED; payload: { success: boolean } }
+  | { type: PluginMessage.IMAGE_INSERTED; payload: { success: boolean; requestId?: string; error?: string } }
   | { type: PluginMessage.GENERATION_HISTORY_LOADED; payload: GenerationHistoryItem[] }
   | { type: PluginMessage.PROMPT_LIBRARY_LOADED; payload: PromptLibraryItem[] }
   | { type: PluginMessage.ERROR; payload: { message: string } }
