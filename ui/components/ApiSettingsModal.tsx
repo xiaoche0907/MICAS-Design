@@ -463,7 +463,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                   <div className="v2-image-host-badge">ImgBB</div>
                   <div>
                     <strong>ImgBB 图床（默认）</strong>
-                    <span>通过 Vercel HTTPS 中转上传</span>
+                    <span>通过 CX Working HTTPS 中转上传</span>
                   </div>
                 </button>
                 <button
@@ -497,7 +497,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                   <div className="v2-image-host-badge freeimage">Free</div>
                   <div>
                     <strong>Freeimage.host</strong>
-                    <span>通过 XC-AI HTTPS 中转上传</span>
+                    <span>通过 CX Working HTTPS 中转上传</span>
                   </div>
                 </button>
               </div>
