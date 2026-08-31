@@ -223,23 +223,6 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
       })
     } catch (error: any) {
       const message = error?.message || String(error)
-      if (
-        imageHostProvider === 'imgbb'
-        && /(?:\b103\b|forbidden|been forbidden)/i.test(message)
-        && freeimageApiKey.trim()
-      ) {
-        try {
-          await testImageHostConnection('freeimage', freeimageApiKey)
-          setImageHostProvider('freeimage')
-          setImgBbTestResult({
-            success: true,
-            message: 'ImgBB 禁止了当前账号或请求出口（103）。已自动切换到可用的 Freeimage.host，请点击“保存配置”。',
-          })
-          return
-        } catch (_) {
-          // Preserve the original ImgBB error when the fallback cannot connect.
-        }
-      }
       const hint = /failed to fetch|networkerror/i.test(message)
         ? `无法通过 CX Working 连接 ${getImageHostDisplayName(imageHostProvider)}，请检查 cxworking.xyz 的部署和网络。`
         : message
@@ -527,7 +510,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                     ? 'Uploadcare 使用 Public Key 从插件 UI 直传，不需要 Secret Key 或中转服务。'
                     : imageHostProvider === 'freeimage'
                       ? 'Freeimage.host 仅通过 CX Working HTTPS 中转上传。'
-                      : 'ImgBB 优先通过 CX Working HTTPS 中转；若上游返回 103，已配置 Freeimage.host 时会自动回退。'}
+                      : 'ImgBB 仅通过 CX Working HTTPS 中转上传，失败时保留 ImgBB 选中状态。'}
                 </span>
                 <a
                   className="v2-key-link"

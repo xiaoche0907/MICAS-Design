@@ -12,7 +12,7 @@ import {
   getImageHostCredentialLabel,
   getImageHostDisplayName,
   getImageHostProvider,
-  uploadToConfiguredImageHost,
+  uploadToImageHost,
 } from '../../utils/imgbb'
 import { matchProviderModels, ProviderModel } from '../modelRegistry'
 
@@ -454,9 +454,10 @@ export class VirseAdapter implements ImageProviderAdapter {
               `使用 Virse 参考图时必须填写 ${getImageHostDisplayName(imageHostProvider)} ${getImageHostCredentialLabel(imageHostProvider)}`
             )
           }
-          imageUrl = await uploadToConfiguredImageHost(
+          imageUrl = await uploadToImageHost(
             imageUrl,
-            profile,
+            imageHostProvider,
+            imageHostApiKey,
             reference.name
           )
         }

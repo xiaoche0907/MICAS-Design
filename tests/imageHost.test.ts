@@ -1,63 +1,59 @@
 declare const require: any
 const assert = require('node:assert/strict')
 const test = require('node:test') as (name: string, callback: () => void | Promise<void>) => void
-import { uploadToConfiguredImageHost } from '../ui/utils/imgbb'
+import { uploadToImageHost } from '../ui/utils/imgbb'
 
 ;(globalThis as any).window = {
   setTimeout,
   clearTimeout,
 }
 
-const forbiddenResponse = () => new Response(JSON.stringify({
-  success: false,
-  status_code: 400,
-  error: { message: 'You have been forbidden to use this website.', code: 103 },
-}), {
-  status: 400,
-  headers: { 'Content-Type': 'application/json' },
-})
-
-test('ImgBB code 103 automatically falls back to configured Freeimage.host', async () => {
+test('ImgBB code 103 remains on ImgBB and never switches providers', async () => {
   const originalFetch = globalThis.fetch
   const requestedUrls: string[] = []
   ;(globalThis as any).fetch = async (input: string | URL | Request) => {
-    const url = String(input)
-    requestedUrls.push(url)
-    if (url.includes('/api/freeimage')) {
-      return new Response(JSON.stringify({ image: { url: 'http://images.example/fallback.png' } }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-    return forbiddenResponse()
+    requestedUrls.push(String(input))
+    return new Response(JSON.stringify({
+      success: false,
+      status_code: 400,
+      error: { message: 'You have been forbidden to use this website.', code: 103 },
+    }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
 
   try {
-    const result = await uploadToConfiguredImageHost('R0lGODlhAQABAIAAAAUEBA==', {
-      imageHostProvider: 'imgbb',
-      imgbbApiKey: 'imgbb-key',
-      freeimageApiKey: 'freeimage-key',
-    }, 'fallback-test')
-    assert.equal(result, 'https://images.example/fallback.png')
-    assert.ok(requestedUrls.some((url) => url.includes('/api/imgbb')))
-    assert.ok(requestedUrls.some((url) => url.includes('/api/freeimage')))
-    assert.ok(requestedUrls.every((url) => url.startsWith('https://www.cxworking.xyz/')))
+    await assert.rejects(
+      () => uploadToImageHost('R0lGODlhAQABAIAAAAUEBA==', 'imgbb', 'imgbb-key'),
+      /ImgBB 禁止了当前账号或请求出口.*103/
+    )
+    assert.ok(requestedUrls.length > 0)
+    assert.ok(requestedUrls.every((url) => url === 'https://www.cxworking.xyz/api/imgbb'))
   } finally {
     ;(globalThis as any).fetch = originalFetch
   }
 })
 
-test('ImgBB code 103 remains explicit when no fallback is configured', async () => {
+test('Freeimage uploads only through its CX Working route', async () => {
   const originalFetch = globalThis.fetch
-  ;(globalThis as any).fetch = async () => forbiddenResponse()
+  const requestedUrls: string[] = []
+  ;(globalThis as any).fetch = async (input: string | URL | Request) => {
+    requestedUrls.push(String(input))
+    return new Response(JSON.stringify({ image: { url: 'http://images.example/freeimage.png' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   try {
-    await assert.rejects(
-      () => uploadToConfiguredImageHost('R0lGODlhAQABAIAAAAUEBA==', {
-        imageHostProvider: 'imgbb',
-        imgbbApiKey: 'imgbb-key',
-      }),
-      /ImgBB 禁止了当前账号或请求出口.*103/
+    const result = await uploadToImageHost(
+      'R0lGODlhAQABAIAAAAUEBA==',
+      'freeimage',
+      'freeimage-key'
     )
+    assert.equal(result, 'https://images.example/freeimage.png')
+    assert.deepEqual(requestedUrls, ['https://www.cxworking.xyz/api/freeimage'])
   } finally {
     ;(globalThis as any).fetch = originalFetch
   }

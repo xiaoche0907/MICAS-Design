@@ -220,38 +220,6 @@ export async function uploadToImageHost(
   return requestImageHostUpload(provider, uploadData, normalizedKey, name)
 }
 
-/**
- * 使用当前配置的图床上传。ImgBB 103 表示上游禁止了账号或请求出口；
- * 若用户同时配置了 Freeimage.host，则无感回退，避免整个生成任务失败。
- */
-export async function uploadToConfiguredImageHost(
-  imageData: string,
-  profile: ImageHostProfile,
-  name?: string
-): Promise<string> {
-  const provider = getImageHostProvider(profile)
-  const apiKey = getImageHostApiKey(profile)
-  try {
-    return await uploadToImageHost(imageData, provider, apiKey, name)
-  } catch (error: any) {
-    const message = String(error?.message || error)
-    const freeimageKey = profile.freeimageApiKey?.trim() || ''
-    const canFallback = provider === 'imgbb'
-      && Boolean(freeimageKey)
-      && /(?:\b103\b|forbidden|been forbidden)/i.test(message)
-    if (!canFallback) throw error
-
-    try {
-      return await uploadToImageHost(imageData, 'freeimage', freeimageKey, name)
-    } catch (fallbackError: any) {
-      throw new Error(
-        `ImgBB 已禁止当前账号或出口（103）；`
-        + `Freeimage.host 自动回退也失败：${fallbackError?.message || fallbackError}`
-      )
-    }
-  }
-}
-
 /** 通过上传一张 1x1 GIF 验证当前图床凭据。 */
 export async function testImageHostConnection(
   provider: ImageHostProvider,
