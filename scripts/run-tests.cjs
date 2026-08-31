@@ -17,13 +17,18 @@ try {
     '--esModuleInterop',
     '--outDir', outDir,
     path.join(root, 'ui', 'utils', 'quickCutout.ts'),
+    path.join(root, 'ui', 'utils', 'imgbb.ts'),
     path.join(root, 'tests', 'quickCutout.test.ts'),
+    path.join(root, 'tests', 'imageHost.test.ts'),
   ], { cwd: root, stdio: 'inherit' })
   if (compile.status !== 0) {
     process.exitCode = compile.status || 1
   } else {
-    const testFile = path.join(outDir, 'tests', 'quickCutout.test.js')
-    const run = childProcess.spawnSync(process.execPath, ['--test', testFile], { cwd: root, stdio: 'inherit' })
+    const testFiles = [
+      path.join(outDir, 'tests', 'quickCutout.test.js'),
+      path.join(outDir, 'tests', 'imageHost.test.js'),
+    ]
+    const run = childProcess.spawnSync(process.execPath, ['--test', ...testFiles], { cwd: root, stdio: 'inherit' })
     process.exitCode = run.status || 0
   }
 } finally {

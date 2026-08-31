@@ -7,7 +7,7 @@ import {
 } from '../types'
 import { ApiProfile } from '@messages/sender'
 import { composePromptWithRoles } from '../promptComposer'
-import { getImageHostApiKey, getImageHostProvider, uploadToImageHost } from '../../utils/imgbb'
+import { getImageHostApiKey, uploadToConfiguredImageHost } from '../../utils/imgbb'
 
 const DEFAULT_PLATO_BASE_URL = 'https://api.bltcy.ai'
 const PLATO_MODEL_IDS = [
@@ -94,16 +94,14 @@ export class ApilioAdapter implements ImageProviderAdapter {
 
     try {
       const referenceUrls: string[] = []
-      const imageHostProvider = getImageHostProvider(profile)
       const imageHostApiKey = getImageHostApiKey(profile)
       for (const reference of request.references) {
         if (!reference.previewUrl) continue
         let imageUrl = reference.previewUrl
         if (imageHostApiKey && imageUrl.startsWith('data:')) {
-          imageUrl = await uploadToImageHost(
+          imageUrl = await uploadToConfiguredImageHost(
             imageUrl,
-            imageHostProvider,
-            imageHostApiKey,
+            profile,
             reference.name
           )
         }

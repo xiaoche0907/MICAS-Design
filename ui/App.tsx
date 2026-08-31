@@ -11,6 +11,7 @@ import {
   LayerSummary,
   GenerationHistoryItem,
   PromptLibraryItem,
+  UiPreferences,
 } from '@messages/sender'
 import {
   ReferenceImage,
@@ -658,6 +659,30 @@ export default function App() {
     type?: 'success' | 'error' | 'warning' | 'info'
   } | null>(null)
 
+  // Image requests run inside the plugin UI. Closing or replacing the plugin
+  // destroys that runtime, so ask the MasterGo host to confirm before it tears
+  // down an active request. The beforeunload handler is a fallback for hosts
+  // that navigate the iframe without going through the native close button.
+  useEffect(() => {
+    sendMsgToPlugin({
+      type: UIMessage.SET_CLOSE_CONFIRM,
+      payload: {
+        enabled: isGenerating,
+        message: isGenerating
+          ? '图片仍在生成中，现在关闭或切换插件会中断任务。请等待生成完成后再离开。'
+          : undefined,
+      },
+    })
+
+    if (!isGenerating) return
+    const preventAccidentalUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', preventAccidentalUnload)
+    return () => window.removeEventListener('beforeunload', preventAccidentalUnload)
+  }, [isGenerating])
+
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const pendingQuickActionRef = useRef<{ kind: string; prompt?: string } | null>(null)
   // Selection changes are emitted for ordinary canvas clicks and for images that
@@ -743,9 +768,9 @@ export default function App() {
 
           if (backgroundUiModeRef.current) {
             setQuickSelection(null)
-            setIsOutpaintMinimized(true)
-            setIsTryOnMinimized(true)
-            sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+            // Keep the active editor visible while the request is running.
+            // A manually minimized editor is already in generating mode; this
+            // guard simply prevents selection events from opening the image menu.
             break
           }
 
@@ -791,6 +816,15 @@ export default function App() {
           setPromptLibrary(msg.payload)
           break
 
+        case PluginMessage.UI_PREFERENCES_LOADED: {
+          const preferences = msg.payload || {}
+          if (preferences.selectionShortcut) {
+            setSelectionShortcut(preferences.selectionShortcut)
+          }
+          setIsCanvasToolbarEnabled(preferences.canvasToolbarEnabled !== false)
+          break
+        }
+
         case PluginMessage.TOAST:
           // The quick-cutout status is shown in the existing toolbar button.
           // A fixed toast covers the compact 50px canvas toolbar.
@@ -816,6 +850,7 @@ export default function App() {
     sendMsgToPlugin({ type: UIMessage.GET_SELECTION })
     sendMsgToPlugin({ type: UIMessage.GET_GENERATION_HISTORY })
     sendMsgToPlugin({ type: UIMessage.GET_PROMPT_LIBRARY })
+    sendMsgToPlugin({ type: UIMessage.GET_UI_PREFERENCES })
 
     return () => {
       window.removeEventListener('message', handleMessage)
@@ -825,6 +860,20 @@ export default function App() {
   useEffect(() => {
     canvasToolbarEnabledRef.current = isCanvasToolbarEnabled
   }, [isCanvasToolbarEnabled])
+
+  const persistUiPreferences = (next: UiPreferences) => {
+    try {
+      if (next.selectionShortcut) {
+        localStorage.setItem('micas_selection_shortcut_v1', next.selectionShortcut)
+      }
+      if (typeof next.canvasToolbarEnabled === 'boolean') {
+        localStorage.setItem('micas_canvas_toolbar_enabled_v1', String(next.canvasToolbarEnabled))
+      }
+    } catch {
+      // MasterGo clientStorage remains the durable source of truth.
+    }
+    sendMsgToPlugin({ type: UIMessage.SAVE_UI_PREFERENCES, payload: next })
+  }
 
   // MasterGo does not expose arbitrary canvas-level shortcut registration;
   // this listener is active whenever the plugin window has keyboard focus.
@@ -1580,8 +1629,8 @@ export default function App() {
     setIsGenerating(true)
     setOutpaintJobState('running')
     setOutpaintJobModel(`${outpaintModelId === 'gpt-image-2' ? 'Image 2' : 'Nanobanana 2'} · ${outpaintResolution}`)
-    setIsOutpaintMinimized(true)
-    sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+    setIsOutpaintMinimized(false)
+    sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'outpaint' } })
     setGenTimer(0)
     const timerInterval = setInterval(() => setGenTimer((value) => value + 1), 1000)
     setToast({ message: '正在锁定原图并生成透明扩展区域…', type: 'info' })
@@ -1623,8 +1672,8 @@ export default function App() {
       await insertGeneratedImages(completedResults, true)
       setOutpaintSource(null)
       setOutpaintJobState('success')
-      setIsOutpaintMinimized(true)
-      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+      setIsOutpaintMinimized(false)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
       setToast({ message: '智能扩图已生成并自动插入画布', type: 'success' })
     } catch (error: any) {
       backgroundUiModeRef.current = false
@@ -1662,8 +1711,8 @@ export default function App() {
     setIsGenerating(true)
     setTryOnJobState('running')
     setTryOnJobModel(`${tryOnModelId === 'gpt-image-2' ? 'Image 2' : 'Nanobanana 2'} · ${tryOnResolution}`)
-    setIsTryOnMinimized(true)
-    sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+    setIsTryOnMinimized(false)
+    sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'tryon' } })
     setGenTimer(0)
     const timerInterval = setInterval(() => setGenTimer((value) => value + 1), 1000)
     setToast({ message: '万物上身已转入后台生成，可继续操作画布', type: 'info' })
@@ -1705,8 +1754,8 @@ export default function App() {
       await insertGeneratedImages(completedResults, true)
       setTryOnSource(null)
       setTryOnJobState('success')
-      setIsTryOnMinimized(true)
-      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'generating' } })
+      setIsTryOnMinimized(false)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
       setToast({ message: '换装图片已生成并自动插入画布', type: 'success' })
     } catch (error: any) {
       backgroundUiModeRef.current = false
@@ -1963,11 +2012,10 @@ export default function App() {
               const next = !isCanvasToolbarEnabled
               setIsCanvasToolbarEnabled(next)
               canvasToolbarEnabledRef.current = next
-              try {
-                localStorage.setItem('micas_canvas_toolbar_enabled_v1', String(next))
-              } catch {
-                // Keep the preference for this session if storage is unavailable.
-              }
+              persistUiPreferences({
+                selectionShortcut,
+                canvasToolbarEnabled: next,
+              })
               if (!next) {
                 setQuickSelection(null)
                 sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
@@ -2575,11 +2623,10 @@ export default function App() {
         selectionShortcut={selectionShortcut}
         onSelectionShortcutChange={(shortcut) => {
           setSelectionShortcut(shortcut)
-          try {
-            localStorage.setItem('micas_selection_shortcut_v1', shortcut)
-          } catch {
-            // The in-memory preference remains active if storage is unavailable.
-          }
+          persistUiPreferences({
+            selectionShortcut: shortcut,
+            canvasToolbarEnabled: isCanvasToolbarEnabled,
+          })
         }}
         onClose={() => setIsSettingsOpen(false)}
         onSave={(prof) => {

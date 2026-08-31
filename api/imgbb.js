@@ -40,7 +40,11 @@ const uploadToImgBB = async ({ key, image, name, expiration }) => {
   const validExpiration = normalizeExpiration(expiration)
   if (validExpiration) query.set('expiration', String(validExpiration))
 
-  const form = new URLSearchParams({ image: cleanImage })
+  // ImgBB's documented upload contract uses multipart/form-data. In particular,
+  // large base64 payloads can be rejected after URL encoding, so let FormData
+  // preserve the source exactly and generate the multipart boundary for us.
+  const form = new FormData()
+  form.set('image', cleanImage)
   if (typeof name === 'string' && name.trim()) {
     form.set('name', name.trim().slice(0, 128))
   }
@@ -52,9 +56,8 @@ const uploadToImgBB = async ({ key, image, name, expiration }) => {
       method: 'POST',
       headers: {
         Accept: 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       },
-      body: form.toString(),
+      body: form,
       signal: controller.signal,
     })
     const raw = await response.text()
@@ -111,4 +114,3 @@ module.exports = async function handler(req, res) {
     })
   }
 }
-

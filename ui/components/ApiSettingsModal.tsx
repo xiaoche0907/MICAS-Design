@@ -24,7 +24,7 @@ import {
 } from './icons'
 
 const DEFAULT_VIRSE_BASE_URL = 'https://api.virse.ai'
-const DEFAULT_VIRSE_RELAY_URL = 'https://www.xcwork-tool.online/api/virse'
+const DEFAULT_VIRSE_RELAY_URL = 'https://www.cxworking.xyz/api/virse'
 const DEFAULT_PLATO_BASE_URL = 'https://api.bltcy.ai'
 
 type SettingsSection = 'models' | 'agents' | 'image-host' | 'shortcuts'
@@ -110,7 +110,12 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
 
     setProvider(nextProvider)
     setBaseUrl(nextBaseUrl)
-    setVirseRelayUrl(initialProfile.virseRelayUrl || DEFAULT_VIRSE_RELAY_URL)
+    const savedVirseRelayUrl = initialProfile.virseRelayUrl || ''
+    setVirseRelayUrl(
+      /(?:xcwork-tool\.online|1-sepia-gamma\.vercel\.app)\/api\/virse\/?$/i.test(savedVirseRelayUrl)
+        ? DEFAULT_VIRSE_RELAY_URL
+        : savedVirseRelayUrl || DEFAULT_VIRSE_RELAY_URL
+    )
     setApiKey(initialProfile.apiKey || '')
     setAgentBaseUrl(
       initialProfile.agentBaseUrl
@@ -218,8 +223,25 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
       })
     } catch (error: any) {
       const message = error?.message || String(error)
+      if (
+        imageHostProvider === 'imgbb'
+        && /(?:\b103\b|forbidden|been forbidden)/i.test(message)
+        && freeimageApiKey.trim()
+      ) {
+        try {
+          await testImageHostConnection('freeimage', freeimageApiKey)
+          setImageHostProvider('freeimage')
+          setImgBbTestResult({
+            success: true,
+            message: 'ImgBB 禁止了当前账号或请求出口（103）。已自动切换到可用的 Freeimage.host，请点击“保存配置”。',
+          })
+          return
+        } catch (_) {
+          // Preserve the original ImgBB error when the fallback cannot connect.
+        }
+      }
       const hint = /failed to fetch|networkerror/i.test(message)
-        ? `无法连接 ${getImageHostDisplayName(imageHostProvider)}，请检查网络。`
+        ? `无法通过 CX Working 连接 ${getImageHostDisplayName(imageHostProvider)}，请检查 cxworking.xyz 的部署和网络。`
         : message
       setImgBbTestResult({ success: false, message: hint })
     } finally {
@@ -504,8 +526,8 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                   {imageHostProvider === 'uploadcare'
                     ? 'Uploadcare 使用 Public Key 从插件 UI 直传，不需要 Secret Key 或中转服务。'
                     : imageHostProvider === 'freeimage'
-                      ? 'Freeimage.host 通过 Vercel HTTPS 中转上传，插件无需单独部署后端。'
-                      : 'ImgBB 优先通过 XC-AI HTTPS 中转；若中转出口被拒绝，会自动恢复为官方 FormData 直传。'}
+                      ? 'Freeimage.host 仅通过 CX Working HTTPS 中转上传。'
+                      : 'ImgBB 优先通过 CX Working HTTPS 中转；若上游返回 103，已配置 Freeimage.host 时会自动回退。'}
                 </span>
                 <a
                   className="v2-key-link"

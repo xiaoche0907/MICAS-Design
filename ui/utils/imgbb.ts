@@ -1,11 +1,11 @@
 /**
  * 图床上传工具。
- * ImgBB/Uploadcare 可由 UI 直连；Freeimage.host 需要 CORS 中转。
+ * Uploadcare 可由 UI 直连；ImgBB/Freeimage.host 统一走 CX Working CORS 中转。
  */
 
 export type ImageHostProvider = 'imgbb' | 'uploadcare' | 'freeimage'
 
-interface ImageHostProfile {
+export interface ImageHostProfile {
   imageHostProvider?: ImageHostProvider
   imgbbApiKey?: string
   uploadcarePublicKey?: string
@@ -13,9 +13,8 @@ interface ImageHostProfile {
 }
 
 const TEST_IMAGE = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
-const IMAGE_RELAY_BASE_URL = 'https://1-sepia-gamma.vercel.app'
+const IMAGE_RELAY_BASE_URL = 'https://www.cxworking.xyz'
 const IMGBB_RELAY_URL = `${IMAGE_RELAY_BASE_URL}/api/imgbb`
-const IMGBB_UPLOAD_URL = 'https://api.imgbb.com/1/upload'
 const FREEIMAGE_RELAY_URL = `${IMAGE_RELAY_BASE_URL}/api/freeimage`
 const UPLOADCARE_UPLOAD_URL = 'https://upload.uploadcare.com/base/'
 
@@ -54,6 +53,23 @@ interface ImgBBRequestError extends Error {
   status?: number
 }
 
+const fetchWithTimeout = async (
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> => {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error: any) {
+    if (error?.name === 'AbortError') throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`)
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
 const readImgBBResponse = async (response: Response): Promise<string> => {
   const raw = await response.text()
   const result = parseJson(raw)
@@ -73,37 +89,14 @@ const readImgBBResponse = async (response: Response): Promise<string> => {
   throw error
 }
 
-/**
- * 旧版上传方式：从插件 UI 直接用 multipart/form-data 调用 ImgBB 官方接口。
- * 该路径不依赖插件主进程的 fetch，也不需要部署插件本身。
- */
-const uploadImgBBDirect = async (
-  image: string,
-  apiKey: string,
-  name?: string,
-  expiration?: number
-): Promise<string> => {
-  const params = [`key=${encodeURIComponent(apiKey)}`]
-  if (expiration) params.push(`expiration=${encodeURIComponent(String(expiration))}`)
-
-  const body = new FormData()
-  body.append('image', image)
-  if (name?.trim()) body.append('name', name.trim())
-
-  const response = await fetch(`${IMGBB_UPLOAD_URL}?${params.join('&')}`, {
-    method: 'POST',
-    body,
-  })
-  return readImgBBResponse(response)
-}
-
 const uploadImgBBViaRelay = async (
   image: string,
   apiKey: string,
   name?: string,
-  expiration?: number
+  expiration?: number,
+  timeoutMs = 65000
 ): Promise<string> => {
-  const response = await fetch(IMGBB_RELAY_URL, {
+  const response = await fetchWithTimeout(IMGBB_RELAY_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -112,16 +105,21 @@ const uploadImgBBViaRelay = async (
       name: name?.trim() || undefined,
       expiration,
     }),
-  })
+  }, timeoutMs)
   return readImgBBResponse(response)
 }
 
-const uploadFreeimageViaRelay = async (image: string, apiKey: string, name?: string): Promise<string> => {
-  const response = await fetch(FREEIMAGE_RELAY_URL, {
+const uploadFreeimageViaRelay = async (
+  image: string,
+  apiKey: string,
+  name?: string,
+  timeoutMs = 65000
+): Promise<string> => {
+  const response = await fetchWithTimeout(FREEIMAGE_RELAY_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key: apiKey, source: image, name: name?.trim() || undefined, format: 'json' }),
-  })
+  }, timeoutMs)
   const raw = await response.text()
   const result = parseJson(raw)
   const uploadedUrl = typeof result?.image?.url === 'string'
@@ -132,7 +130,10 @@ const uploadFreeimageViaRelay = async (image: string, apiKey: string, name?: str
   if (!response.ok || !uploadedUrl) {
     const code = Number(result?.error?.code || result?.status_code || result?.status) || response.status
     const message = result?.error?.message || result?.status_txt || `HTTP ${response.status}`
-    throw new Error(`Freeimage.host 上传失败（${code}）：${message}`)
+    const error = new Error(`Freeimage.host 上传失败（${code}）：${message}`) as ImgBBRequestError
+    error.code = code
+    error.status = response.status
+    throw error
   }
   return uploadedUrl
 }
@@ -152,9 +153,12 @@ const requestImageHostUpload = async (
   image: string,
   apiKey: string,
   name?: string,
-  expiration?: number
+  expiration?: number,
+  timeoutMs = 65000
 ): Promise<string> => {
-  if (provider === 'freeimage') return uploadFreeimageViaRelay(image, apiKey, name)
+  if (provider === 'freeimage') {
+    return uploadFreeimageViaRelay(image, apiKey, name, timeoutMs)
+  }
 
   if (provider === 'uploadcare') {
     const blob = base64ToBlob(image)
@@ -163,7 +167,7 @@ const requestImageHostUpload = async (
     body.append('UPLOADCARE_STORE', expiration ? '0' : 'auto')
     body.append('file', blob, name?.trim() || 'micas-image.png')
     try {
-      const response = await fetch(UPLOADCARE_UPLOAD_URL, { method: 'POST', body })
+      const response = await fetchWithTimeout(UPLOADCARE_UPLOAD_URL, { method: 'POST', body }, timeoutMs)
       const raw = await response.text()
       const result = parseJson(raw)
       const fileId = typeof result?.file === 'string' ? result.file : ''
@@ -177,32 +181,22 @@ const requestImageHostUpload = async (
     }
   }
 
-  let relayError: ImgBBRequestError
   try {
-    return await uploadImgBBViaRelay(image, apiKey, name, expiration)
+    return await uploadImgBBViaRelay(image, apiKey, name, expiration, timeoutMs)
   } catch (error: any) {
-    relayError = error
-  }
-
-  // Key 无效时换出口也不会成功，直接保留明确错误；其余情况恢复旧版官方直传。
-  if (relayError.code === 100) {
-    throw new Error(`ImgBB API Key 无效（100）：${relayError.message}`)
-  }
-
-  try {
-    return await uploadImgBBDirect(image, apiKey, name, expiration)
-  } catch (directError: any) {
-    const relayCode = relayError.code || relayError.status || '网络异常'
-    const directCode = directError?.code || directError?.status || '网络异常'
-    if (relayError.code === 103 && directError?.code === 103) {
+    const relayError = error as ImgBBRequestError
+    if (relayError.code === 100) {
+      throw new Error(`ImgBB API Key 无效（100）：${relayError.message}`)
+    }
+    if (relayError.code === 103) {
       throw new Error(
-        'ImgBB 已同时拒绝中转和官方直传（103）。这不是 URL 错误；请更换新的 ImgBB API Key，'
-        + '若仍返回 103，请切换到 Uploadcare。'
+        'ImgBB 禁止了当前账号或请求出口（错误 103）。'
+        + '这不是网络或 URL 错误；请改用 Freeimage.host 或 Uploadcare。'
       )
     }
     throw new Error(
-      `ImgBB 上传失败：中转（${relayCode}）${relayError.message || '连接失败'}；`
-      + `官方直传（${directCode}）${directError?.message || '连接失败'}`
+      `ImgBB 通过 CX Working 中转上传失败`
+      + `（${relayError.code || relayError.status || '网络异常'}）：${relayError.message || '连接失败'}`
     )
   }
 }
@@ -226,6 +220,38 @@ export async function uploadToImageHost(
   return requestImageHostUpload(provider, uploadData, normalizedKey, name)
 }
 
+/**
+ * 使用当前配置的图床上传。ImgBB 103 表示上游禁止了账号或请求出口；
+ * 若用户同时配置了 Freeimage.host，则无感回退，避免整个生成任务失败。
+ */
+export async function uploadToConfiguredImageHost(
+  imageData: string,
+  profile: ImageHostProfile,
+  name?: string
+): Promise<string> {
+  const provider = getImageHostProvider(profile)
+  const apiKey = getImageHostApiKey(profile)
+  try {
+    return await uploadToImageHost(imageData, provider, apiKey, name)
+  } catch (error: any) {
+    const message = String(error?.message || error)
+    const freeimageKey = profile.freeimageApiKey?.trim() || ''
+    const canFallback = provider === 'imgbb'
+      && Boolean(freeimageKey)
+      && /(?:\b103\b|forbidden|been forbidden)/i.test(message)
+    if (!canFallback) throw error
+
+    try {
+      return await uploadToImageHost(imageData, 'freeimage', freeimageKey, name)
+    } catch (fallbackError: any) {
+      throw new Error(
+        `ImgBB 已禁止当前账号或出口（103）；`
+        + `Freeimage.host 自动回退也失败：${fallbackError?.message || fallbackError}`
+      )
+    }
+  }
+}
+
 /** 通过上传一张 1x1 GIF 验证当前图床凭据。 */
 export async function testImageHostConnection(
   provider: ImageHostProvider,
@@ -240,6 +266,7 @@ export async function testImageHostConnection(
     provider === 'uploadcare' ? `data:image/gif;base64,${TEST_IMAGE}` : TEST_IMAGE,
     normalizedKey,
     'micas-connection-test',
-    provider === 'imgbb' ? 60 : 1
+    provider === 'imgbb' ? 60 : 1,
+    15000
   )
 }

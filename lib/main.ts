@@ -11,6 +11,7 @@ import {
   InsertImageGridPayload,
   ExportedImagePayload,
   RemoteImageBytesRequestPayload,
+  UiPreferences,
 } from '@messages/sender'
 
 // MasterGo supports one plugin UI window, so keep the main panel fixed.
@@ -22,6 +23,7 @@ mg.showUI(__html__, {
 const CLIENT_STORAGE_KEY = 'micas_api_profile_v1'
 const GENERATION_HISTORY_KEY = 'micas_generation_history_v1'
 const PROMPT_LIBRARY_KEY = 'micas_prompt_library_v1'
+const UI_PREFERENCES_KEY = 'micas_ui_preferences_v1'
 const PANEL_SIZE = { width: 420, height: 820 }
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
 // Height includes enough room for MasterGo's native title bar plus the 50px toolbar.
@@ -348,6 +350,35 @@ async function savePromptLibrary(library: any[]) {
   }
 }
 
+async function loadUiPreferences() {
+  const defaults: UiPreferences = {
+    selectionShortcut: undefined,
+    canvasToolbarEnabled: true,
+  }
+  try {
+    const raw = await mg.clientStorage.getAsync(UI_PREFERENCES_KEY)
+    const saved = raw ? JSON.parse(raw) : {}
+    sendMsgToUI({
+      type: PluginMessage.UI_PREFERENCES_LOADED,
+      payload: {
+        ...defaults,
+        ...(saved && typeof saved === 'object' ? saved : {}),
+      },
+    })
+  } catch (err) {
+    console.error('璇诲彇 UI 偏好失败:', err)
+    sendMsgToUI({ type: PluginMessage.UI_PREFERENCES_LOADED, payload: defaults })
+  }
+}
+
+async function saveUiPreferences(preferences: UiPreferences) {
+  try {
+    await mg.clientStorage.setAsync(UI_PREFERENCES_KEY, JSON.stringify(preferences || {}))
+  } catch (err) {
+    console.error('保存 UI 偏好失败:', err)
+  }
+}
+
 function normalizeImageBytes(value: any): Uint8Array {
   if (!value) return new Uint8Array()
   if (value instanceof Uint8Array) return value
@@ -662,6 +693,15 @@ mg.ui.onmessage = (msgReceived: any) => {
       setUiMode(msg.payload.mode)
       break
 
+    case UIMessage.SET_CLOSE_CONFIRM:
+      if (typeof mg.ui.setCloseConfirm === 'function') {
+        mg.ui.setCloseConfirm({
+          enabled: msg.payload.enabled,
+          message: msg.payload.message,
+        })
+      }
+      break
+
     case UIMessage.GET_GENERATION_HISTORY:
       loadGenerationHistory()
       break
@@ -678,6 +718,14 @@ mg.ui.onmessage = (msgReceived: any) => {
       savePromptLibrary(msg.payload)
       break
 
+    case UIMessage.GET_UI_PREFERENCES:
+      loadUiPreferences()
+      break
+
+    case UIMessage.SAVE_UI_PREFERENCES:
+      saveUiPreferences(msg.payload)
+      break
+
     default:
       break
   }
@@ -688,3 +736,4 @@ broadcastSelection()
 loadApiProfile()
 loadGenerationHistory()
 loadPromptLibrary()
+loadUiPreferences()

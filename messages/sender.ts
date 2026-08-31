@@ -99,6 +99,11 @@ export interface SetUiModePayload {
   anchor?: { x: number; y: number }
 }
 
+export interface SetCloseConfirmPayload {
+  enabled: boolean
+  message?: string
+}
+
 export interface GenerationHistoryItem {
   id: string
   url: string
@@ -118,6 +123,12 @@ export interface PromptLibraryItem {
   pinned?: boolean
 }
 
+/** UI preferences that must survive plugin iframe remounts and window mode changes. */
+export interface UiPreferences {
+  selectionShortcut?: string
+  canvasToolbarEnabled?: boolean
+}
+
 export enum PluginMessage {
   CONNECTED = 'CONNECTED',
   PONG = 'PONG',
@@ -128,6 +139,7 @@ export enum PluginMessage {
   IMAGE_INSERTED = 'IMAGE_INSERTED',
   GENERATION_HISTORY_LOADED = 'GENERATION_HISTORY_LOADED',
   PROMPT_LIBRARY_LOADED = 'PROMPT_LIBRARY_LOADED',
+  UI_PREFERENCES_LOADED = 'UI_PREFERENCES_LOADED',
   ERROR = 'ERROR',
   TOAST = 'TOAST',
   REMOTE_IMAGE_BYTES_LOADED = 'REMOTE_IMAGE_BYTES_LOADED',
@@ -143,11 +155,14 @@ export enum UIMessage {
   INSERT_IMAGES = 'INSERT_IMAGES',
   INSERT_IMAGE_GRID = 'INSERT_IMAGE_GRID',
   SET_UI_MODE = 'SET_UI_MODE',
+  SET_CLOSE_CONFIRM = 'SET_CLOSE_CONFIRM',
   GET_GENERATION_HISTORY = 'GET_GENERATION_HISTORY',
   SAVE_GENERATION_HISTORY = 'SAVE_GENERATION_HISTORY',
   GET_PROMPT_LIBRARY = 'GET_PROMPT_LIBRARY',
   SAVE_PROMPT_LIBRARY = 'SAVE_PROMPT_LIBRARY',
   GET_REMOTE_IMAGE_BYTES = 'GET_REMOTE_IMAGE_BYTES',
+  GET_UI_PREFERENCES = 'GET_UI_PREFERENCES',
+  SAVE_UI_PREFERENCES = 'SAVE_UI_PREFERENCES',
 }
 
 export type PluginMessageData =
@@ -160,6 +175,7 @@ export type PluginMessageData =
   | { type: PluginMessage.IMAGE_INSERTED; payload: { success: boolean; requestId?: string; error?: string } }
   | { type: PluginMessage.GENERATION_HISTORY_LOADED; payload: GenerationHistoryItem[] }
   | { type: PluginMessage.PROMPT_LIBRARY_LOADED; payload: PromptLibraryItem[] }
+  | { type: PluginMessage.UI_PREFERENCES_LOADED; payload: UiPreferences }
   | { type: PluginMessage.ERROR; payload: { message: string } }
   | { type: PluginMessage.TOAST; payload: { message: string; messageType?: 'success' | 'error' | 'warning' | 'info' } }
   | { type: PluginMessage.REMOTE_IMAGE_BYTES_LOADED; payload: RemoteImageBytesPayload }
@@ -174,11 +190,14 @@ export type UIMessageData =
   | { type: UIMessage.INSERT_IMAGES; payload: InsertImagesPayload }
   | { type: UIMessage.INSERT_IMAGE_GRID; payload: InsertImageGridPayload }
   | { type: UIMessage.SET_UI_MODE; payload: SetUiModePayload }
+  | { type: UIMessage.SET_CLOSE_CONFIRM; payload: SetCloseConfirmPayload }
   | { type: UIMessage.GET_GENERATION_HISTORY }
   | { type: UIMessage.SAVE_GENERATION_HISTORY; payload: GenerationHistoryItem[] }
   | { type: UIMessage.GET_PROMPT_LIBRARY }
   | { type: UIMessage.SAVE_PROMPT_LIBRARY; payload: PromptLibraryItem[] }
   | { type: UIMessage.GET_REMOTE_IMAGE_BYTES; payload: RemoteImageBytesRequestPayload }
+  | { type: UIMessage.GET_UI_PREFERENCES }
+  | { type: UIMessage.SAVE_UI_PREFERENCES; payload: UiPreferences }
 
 /**
  * 向 UI 发送消息 (从 Main 调用)
