@@ -285,7 +285,7 @@ const decodeWorkspace = (value?: string): { spaceId: string; canvasId: string } 
 }
 
 export class VirseAdapter implements ImageProviderAdapter {
-  private async callDirectMcp(profile: ApiProfile, tool: string, args: Record<string, unknown>): Promise<VirseToolResult> {
+  private async callDirectMcp(profile: ApiProfile, tool: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<VirseToolResult> {
     const baseUrl = normalizeBaseUrl(profile.baseUrl)
     const postMcp = async (body: Record<string, unknown>, sessionId = ''): Promise<{ data: any; sessionId: string }> => {
       const headers: Record<string, string> = {
@@ -298,6 +298,7 @@ export class VirseAdapter implements ImageProviderAdapter {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
+        signal,
       })
       if (!response.ok) throw new Error(await errorMessageFromResponse(response))
       const raw = await response.text()
@@ -352,10 +353,10 @@ export class VirseAdapter implements ImageProviderAdapter {
     }
   }
 
-  private async callTool(profile: ApiProfile, tool: string, args: Record<string, unknown> = {}): Promise<VirseToolResult> {
+  private async callTool(profile: ApiProfile, tool: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<VirseToolResult> {
     if (!profile.apiKey?.trim()) throw new Error('缺少 Virse API Key')
     const relayUrl = normalizeRelayUrl(profile.virseRelayUrl)
-    if (!relayUrl) return this.callDirectMcp(profile, tool, args)
+    if (!relayUrl) return this.callDirectMcp(profile, tool, args, signal)
 
     let relayError = ''
     try {
@@ -368,21 +369,23 @@ export class VirseAdapter implements ImageProviderAdapter {
           tool,
           args,
         }),
+        signal,
       })
       if (!response.ok) throw new Error(await errorMessageFromResponse(response))
       return await response.json()
     } catch (error: any) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error
       relayError = String(error?.message || error)
     }
 
     try {
-      return await this.callDirectMcp(profile, tool, args)
+      return await this.callDirectMcp(profile, tool, args, signal)
     } catch (directError: any) {
       throw new Error(`中转请求失败：${relayError}；Virse 直连也失败：${directError?.message || directError}`)
     }
   }
 
-  async testConnection(profile: ApiProfile): Promise<ConnectionResult> {
+  async testConnection(profile: ApiProfile, signal?: AbortSignal): Promise<ConnectionResult> {
     if (!profile.apiKey?.trim()) return { success: false, message: '请先填写 Virse API Key' }
     const preferredBaseUrl = normalizeBaseUrl(profile.baseUrl)
     const candidates = [
@@ -395,10 +398,10 @@ export class VirseAdapter implements ImageProviderAdapter {
     for (const candidate of candidates) {
       const candidateProfile = { ...profile, baseUrl: candidate }
       try {
-        await this.callTool(candidateProfile, 'get_account')
+        await this.callTool(candidateProfile, 'get_account', {}, signal)
         const [workspaceResult, modelResult] = await Promise.all([
-          this.callTool(candidateProfile, 'list_workspaces'),
-          this.callTool(candidateProfile, 'list_image_models'),
+          this.callTool(candidateProfile, 'list_workspaces', {}, signal),
+          this.callTool(candidateProfile, 'list_image_models', {}, signal),
         ])
         const workspaces = parseWorkspaces(workspaceResult.data)
         const models = parseVirseModels(modelResult.data)
@@ -433,7 +436,7 @@ export class VirseAdapter implements ImageProviderAdapter {
     }
   }
 
-  async submit(request: GenerationRequest, profile: ApiProfile): Promise<GenerationJob> {
+  async submit(request: GenerationRequest, profile: ApiProfile, signal?: AbortSignal): Promise<GenerationJob> {
     if (!profile.apiKey?.trim()) {
       return { status: 'failed', error: { message: '缺少 Virse API Key，请先在设置中配置' } }
     }
@@ -458,7 +461,8 @@ export class VirseAdapter implements ImageProviderAdapter {
             imageUrl,
             imageHostProvider,
             imageHostApiKey,
-            reference.name
+            reference.name,
+            signal
           )
         }
         const uploaded = await this.callTool(profile, 'upload_image', {
@@ -470,7 +474,7 @@ export class VirseAdapter implements ImageProviderAdapter {
           position_y: 0,
           size_width: reference.width || 512,
           size_height: reference.height || 512,
-        })
+        }, signal)
         const assetId = findStringField(uploaded.data, ['asset_id', 'assetId', 'image_asset_id', 'id'])
         if (!assetId) throw new Error(`Virse 已接收第 ${index + 1} 张参考图，但未返回 asset_id`)
         assetIds.push(assetId)
@@ -484,7 +488,7 @@ export class VirseAdapter implements ImageProviderAdapter {
       let modelId = profile.modelIdMap?.[request.model.id]
         || (request.model.provider === 'virse' ? request.model.modelId : '')
       if (!modelId) {
-        const modelResult = await this.callTool(profile, 'list_image_models')
+        const modelResult = await this.callTool(profile, 'list_image_models', {}, signal)
         const discoveredMap = matchProviderModels(parseVirseModels(modelResult.data))
         modelId = discoveredMap[request.model.id]
       }
@@ -504,14 +508,28 @@ export class VirseAdapter implements ImageProviderAdapter {
         asset_id: assetIds.length > 0 ? assetIds : undefined,
         size_width: landscape ? 512 : Math.max(128, Math.round(512 * ratioWidth / ratioHeight)),
         size_height: landscape ? Math.max(128, Math.round(512 * ratioHeight / ratioWidth)) : 512,
-      })
+      }, signal)
 
       let urls = collectImageUrls(generated.data)
       const artifactVersionId = findStringField(generated.data, ['artifact_version_id', 'artifactVersionId'])
       if (urls.length === 0 && artifactVersionId) {
         for (let attempt = 0; attempt < 120; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 2500))
-          const detail = await this.callTool(profile, 'get_asset_detail', { artifact_version_id: artifactVersionId })
+          await new Promise<void>((resolve, reject) => {
+            if (signal?.aborted) {
+              reject(new DOMException('用户已取消', 'AbortError'))
+              return
+            }
+            const onAbort = () => {
+              clearTimeout(timeout)
+              reject(new DOMException('用户已取消', 'AbortError'))
+            }
+            const timeout = setTimeout(() => {
+              signal?.removeEventListener('abort', onAbort)
+              resolve()
+            }, 2500)
+            signal?.addEventListener('abort', onAbort, { once: true })
+          })
+          const detail = await this.callTool(profile, 'get_asset_detail', { artifact_version_id: artifactVersionId }, signal)
           const status = findStatus(detail.data)
           if (/^(failed|failure|error|cancelled|canceled|rejected)$/.test(status)) {
             throw new Error(`Virse 生成任务失败：artifact_version_id=${artifactVersionId}, status=${status}`)
@@ -537,6 +555,7 @@ export class VirseAdapter implements ImageProviderAdapter {
       }))
       return { status: 'completed', progress: 100, results }
     } catch (error: any) {
+      if (signal?.aborted || error?.name === 'AbortError') return { status: 'cancelled' }
       return {
         status: 'failed',
         error: { message: `Virse 生成失败：${error?.message || error}` },

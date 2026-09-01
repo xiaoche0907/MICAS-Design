@@ -2190,6 +2190,29 @@ body {
   justify-content: space-between;
 }
 
+.v2-loading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.v2-loading-actions button {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 7px;
+  background: rgba(127, 29, 29, 0.25);
+  color: #fca5a5;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.v2-loading-actions button:hover {
+  background: rgba(153, 27, 27, 0.42);
+  color: #fff;
+}
+
 .v2-loading-badge {
   display: flex;
   align-items: center;
@@ -2284,11 +2307,14 @@ body {
 
 /* 流光生成按钮 */
 .v2-generate-submit-btn.generating {
-  background: linear-gradient(90deg, #1F1F24, #2A2A33, #1F1F24);
-  background-size: 200% 100%;
-  animation: shimmerMove 2s infinite;
-  border-color: rgba(139, 92, 246, 0.4);
-  color: #E2E8F0;
+  background: rgba(127, 29, 29, 0.3);
+  border-color: rgba(248, 113, 113, 0.55);
+  color: #FCA5A5;
+}
+
+.v2-generate-submit-btn.generating:hover {
+  background: rgba(153, 27, 27, 0.48);
+  color: #FFFFFF;
 }
 
 /* Fixed dual-column layout: selection actions and generation panel coexist. */
@@ -3285,6 +3311,12 @@ body {
   cursor: pointer;
 }
 .generation-mini > button:hover { background: #363636; }
+.generation-mini > button.generation-mini-cancel {
+  color: #FCA5A5;
+  background: rgba(127, 29, 29, 0.3);
+  border-color: rgba(248, 113, 113, 0.48);
+}
+.generation-mini > button.generation-mini-cancel:hover { background: rgba(153, 27, 27, 0.48); }
 .generation-mini.success { background: #111111; }
 .generation-mini-spinner {
   width: 13px;
@@ -3299,6 +3331,13 @@ body {
 .v2-quick-btn.quick-cutout-active {
   color: #111111;
   background: #ECECEC;
+}
+.image-context-list button.quick-cutout-active.working,
+.v2-quick-btn.quick-cutout-active.working {
+  color: #B42318;
+  background: #FEE4E2;
+  border-color: #FDA29B;
+  cursor: pointer;
 }
 .image-context-list button.quick-cutout-active:disabled,
 .v2-quick-btn.quick-cutout-active:disabled {

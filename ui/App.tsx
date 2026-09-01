@@ -488,8 +488,10 @@ function getImageProxyUrl(relayUrl: string | undefined, imageUrl: string): strin
 
 async function generatedImageToInsertPayload(
   img: GeneratedImage,
-  relayUrl?: string
+  relayUrl?: string,
+  signal?: AbortSignal
 ): Promise<InsertImagePayload> {
+  if (signal?.aborted) throw new DOMException('用户已取消', 'AbortError')
   const dimensionsPromise = img.width && img.height
     ? Promise.resolve({ width: img.width, height: img.height })
     : readImageDimensions(img.url)
@@ -506,21 +508,24 @@ async function generatedImageToInsertPayload(
     let response: Response | null = null
     let directError = ''
     try {
-      response = await fetch(img.url)
+      response = await fetch(img.url, { signal })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
     } catch (error: any) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error
       directError = error?.message || String(error)
       if (proxyUrl) {
         try {
-          response = await fetch(proxyUrl)
+          response = await fetch(proxyUrl, { signal })
           if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        } catch (proxyError) {
+        } catch (proxyError: any) {
+          if (signal?.aborted || proxyError?.name === 'AbortError') throw proxyError
           console.warn('图片在 UI 中读取失败，改由 MasterGo 主线程下载', directError, proxyError)
           response = null
         }
       }
     }
     if (!response && sourceUrl) {
+      if (signal?.aborted) throw new DOMException('用户已取消', 'AbortError')
       try {
         const remote = await requestRemoteImageBytes(sourceUrl, proxyUrl)
         bytes = remote.bytes
@@ -690,6 +695,7 @@ export default function App() {
   // mounted for both cases so its request, draft and progress cannot be hidden
   // behind the compact image menu midway through a job.
   const isGeneratingRef = useRef(false)
+  const generationAbortControllerRef = useRef<AbortController | null>(null)
   const awaitingAutomaticInsertRef = useRef(false)
   const backgroundUiModeRef = useRef(false)
   const quickCutoutWorkflowRef = useRef(new QuickCutoutWorkflow())
@@ -698,6 +704,7 @@ export default function App() {
   const quickCutoutStatusActiveRef = useRef(false)
   const quickCutoutPreparationTimeoutCancelRef = useRef<(() => void) | null>(null)
   const quickCutoutExportExpiredRef = useRef(false)
+  const quickCutoutCancelRequestedRef = useRef(false)
 
   const revokeTransientImage = (image: GeneratedImage) => {
     if (!image.transient || !image.url.startsWith('blob:')) return
@@ -715,6 +722,7 @@ export default function App() {
   }
 
   useEffect(() => () => {
+    generationAbortControllerRef.current?.abort()
     transientUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     transientUrlsRef.current.clear()
     remoteImageByteRequests.forEach((pending) => pending.reject(new Error('插件已关闭')))
@@ -1372,21 +1380,23 @@ export default function App() {
     })
   }
 
-  const insertGeneratedImages = async (images: GeneratedImage[], automatic = false) => {
+  const insertGeneratedImages = async (images: GeneratedImage[], automatic = false, signal?: AbortSignal) => {
     try {
       setToast({
         message: automatic ? '生成成功，正在自动插入 MasterGo 画布...' : '正在准备插入 MasterGo 画布...',
         type: 'info',
       })
       const payloads = await Promise.all(images.map((image) => (
-        generatedImageToInsertPayload(image, apiProfileRef.current?.virseRelayUrl)
+        generatedImageToInsertPayload(image, apiProfileRef.current?.virseRelayUrl, signal)
       )))
+      if (signal?.aborted) return
       if (automatic) awaitingAutomaticInsertRef.current = true
       sendMsgToPlugin({
         type: UIMessage.INSERT_IMAGES,
         payload: { images: payloads },
       })
     } catch (err: any) {
+      if (signal?.aborted || err?.name === 'AbortError') return
       if (automatic) awaitingAutomaticInsertRef.current = false
       console.error('插图失败:', err)
       setToast({
@@ -1408,6 +1418,7 @@ export default function App() {
   }
 
   const beginQuickCutoutStatus = (restoreMode: 'image-menu' | 'panel' = 'image-menu') => {
+    quickCutoutCancelRequestedRef.current = false
     clearQuickCutoutPreparationTimeout()
     if (quickCutoutStatusTimeoutRef.current !== null) window.clearTimeout(quickCutoutStatusTimeoutRef.current)
     if (quickCutoutTimerRef.current !== null) window.clearInterval(quickCutoutTimerRef.current)
@@ -1448,6 +1459,17 @@ export default function App() {
     }, state === 'success' ? 2000 : 3500)
   }
 
+  const cancelQuickCutout = (restoreMode: 'image-menu' | 'panel') => {
+    const waitingForCanvasExport = pendingQuickActionRef.current?.kind === 'quick-cutout'
+    quickCutoutCancelRequestedRef.current = true
+    clearQuickCutoutPreparationTimeout()
+    quickCutoutPreparationRef.current = false
+    pendingQuickActionRef.current = null
+    if (waitingForCanvasExport) quickCutoutExportExpiredRef.current = true
+    finishQuickCutoutStatus('error', '已取消快速抠图', restoreMode)
+    if (restoreMode === 'panel') setToast({ message: '已取消快速抠图', type: 'info' })
+  }
+
   const requestImageInsertion = (payload: InsertImagePayload): Promise<void> => {
     const requestId = `quick-cutout-insert-${Date.now()}-${Math.random().toString(36).slice(2)}`
     return new Promise((resolve, reject) => {
@@ -1480,12 +1502,14 @@ export default function App() {
         },
         localCutout: async (input) => {
           const local = await quickCutoutBytes(input.bytes, input.mimeType)
+          if (quickCutoutCancelRequestedRef.current) throw new DOMException('用户已取消', 'AbortError')
           if (local.success) {
             return { kind: 'transparent' as const, output: { bytes: local.bytes, width: local.width, height: local.height } }
           }
           return { kind: 'preserve-white' as const, reason: local.reason || '仅支持白色或透明背景图片' }
         },
         commit: async (output) => {
+          if (quickCutoutCancelRequestedRef.current) throw new DOMException('用户已取消', 'AbortError')
           const displayWidth = source.displayWidth || source.width || output.width
           const displayHeight = source.displayHeight || source.height || output.height
           const completed: GeneratedImage = {
@@ -1516,6 +1540,7 @@ export default function App() {
         },
       })
 
+      if (quickCutoutCancelRequestedRef.current) return
       if (result.status === 'committed') {
         finishQuickCutoutStatus('success', '透明 PNG 已插入原图右侧', restoreMode)
         if (restoreMode === 'panel') setToast({ message: '快速抠图完成，透明 PNG 已插入原图右侧', type: 'success' })
@@ -1540,6 +1565,34 @@ export default function App() {
     })
   }
 
+  const createGenerationController = () => {
+    generationAbortControllerRef.current?.abort()
+    const controller = new AbortController()
+    generationAbortControllerRef.current = controller
+    return controller
+  }
+
+  const cancelActiveGeneration = (mode?: 'outpaint' | 'tryon') => {
+    const controller = generationAbortControllerRef.current
+    if (!controller || controller.signal.aborted) return
+    controller.abort()
+    generationAbortControllerRef.current = null
+    isGeneratingRef.current = false
+    backgroundUiModeRef.current = false
+    awaitingAutomaticInsertRef.current = false
+    setIsGenerating(false)
+    if (mode === 'outpaint') {
+      setOutpaintJobState('idle')
+      setIsOutpaintMinimized(false)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'outpaint' } })
+    } else if (mode === 'tryon') {
+      setTryOnJobState('idle')
+      setIsTryOnMinimized(false)
+      sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'tryon' } })
+    }
+    setToast({ message: '已取消本次生成，结果不会插入画布', type: 'info' })
+  }
+
   // 发起 AI 生成
   const handleGenerate = async () => {
     const currentApiProfile = apiProfileRef.current || apiProfile
@@ -1560,6 +1613,7 @@ export default function App() {
       return
     }
 
+    const controller = createGenerationController()
     isGeneratingRef.current = true
     awaitingAutomaticInsertRef.current = false
     setQuickSelection(null)
@@ -1583,7 +1637,8 @@ export default function App() {
     }
 
     try {
-      const job = await generationEngine.generate(request, currentApiProfile)
+      const job = await generationEngine.generate(request, currentApiProfile, controller.signal)
+      if (controller.signal.aborted || job.status === 'cancelled') return
       if (job.status === 'completed' && job.results) {
         const completedResults = activeStyleAgent
           ? job.results.map((image) => ({ ...image, prompt: `[${activeStyleAgent.name}] ${prompt.trim()}` }))
@@ -1594,16 +1649,20 @@ export default function App() {
           return nextResults
         })
         setIsHistoryOpen(true)
-        await insertGeneratedImages(completedResults, true)
+        await insertGeneratedImages(completedResults, true, controller.signal)
       } else {
         setToast({ message: job.error?.message || '生成失败，请检查 API 设置', type: 'error' })
       }
     } catch (err: any) {
+      if (controller.signal.aborted || err?.name === 'AbortError') return
       setToast({ message: `生成请求异常: ${err?.message || err}`, type: 'error' })
     } finally {
       clearInterval(timerInterval)
-      isGeneratingRef.current = false
-      setIsGenerating(false)
+      if (generationAbortControllerRef.current === controller) {
+        generationAbortControllerRef.current = null
+        isGeneratingRef.current = false
+        setIsGenerating(false)
+      }
     }
   }
 
@@ -1623,6 +1682,7 @@ export default function App() {
       return
     }
 
+    const controller = createGenerationController()
     isGeneratingRef.current = true
     awaitingAutomaticInsertRef.current = false
     backgroundUiModeRef.current = true
@@ -1649,7 +1709,8 @@ export default function App() {
     }
 
     try {
-      const job = await generationEngine.generate(request, apiProfile)
+      const job = await generationEngine.generate(request, apiProfile, controller.signal)
+      if (controller.signal.aborted || job.status === 'cancelled') return
       if (job.status !== 'completed' || !job.results?.length) {
         backgroundUiModeRef.current = false
         setOutpaintJobState('idle')
@@ -1669,13 +1730,14 @@ export default function App() {
         return nextResults
       })
       setIsHistoryOpen(true)
-      await insertGeneratedImages(completedResults, true)
+      await insertGeneratedImages(completedResults, true, controller.signal)
       setOutpaintSource(null)
       setOutpaintJobState('success')
       setIsOutpaintMinimized(false)
       sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
       setToast({ message: '智能扩图已生成并自动插入画布', type: 'success' })
     } catch (error: any) {
+      if (controller.signal.aborted || error?.name === 'AbortError') return
       backgroundUiModeRef.current = false
       setOutpaintJobState('idle')
       setIsOutpaintMinimized(false)
@@ -1683,8 +1745,11 @@ export default function App() {
       setToast({ message: `智能扩图异常：${error?.message || error}`, type: 'error' })
     } finally {
       clearInterval(timerInterval)
-      isGeneratingRef.current = false
-      setIsGenerating(false)
+      if (generationAbortControllerRef.current === controller) {
+        generationAbortControllerRef.current = null
+        isGeneratingRef.current = false
+        setIsGenerating(false)
+      }
     }
   }
 
@@ -1705,6 +1770,7 @@ export default function App() {
       return
     }
 
+    const controller = createGenerationController()
     isGeneratingRef.current = true
     awaitingAutomaticInsertRef.current = false
     backgroundUiModeRef.current = true
@@ -1731,7 +1797,8 @@ export default function App() {
     }
 
     try {
-      const job = await generationEngine.generate(request, apiProfile)
+      const job = await generationEngine.generate(request, apiProfile, controller.signal)
+      if (controller.signal.aborted || job.status === 'cancelled') return
       if (job.status !== 'completed' || !job.results?.length) {
         backgroundUiModeRef.current = false
         setTryOnJobState('idle')
@@ -1751,13 +1818,14 @@ export default function App() {
         return nextResults
       })
       setIsHistoryOpen(true)
-      await insertGeneratedImages(completedResults, true)
+      await insertGeneratedImages(completedResults, true, controller.signal)
       setTryOnSource(null)
       setTryOnJobState('success')
       setIsTryOnMinimized(false)
       sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
       setToast({ message: '换装图片已生成并自动插入画布', type: 'success' })
     } catch (error: any) {
+      if (controller.signal.aborted || error?.name === 'AbortError') return
       backgroundUiModeRef.current = false
       setTryOnJobState('idle')
       setIsTryOnMinimized(false)
@@ -1765,8 +1833,11 @@ export default function App() {
       setToast({ message: `万物上身异常：${error?.message || error}`, type: 'error' })
     } finally {
       clearInterval(timerInterval)
-      isGeneratingRef.current = false
-      setIsGenerating(false)
+      if (generationAbortControllerRef.current === controller) {
+        generationAbortControllerRef.current = null
+        isGeneratingRef.current = false
+        setIsGenerating(false)
+      }
     }
   }
 
@@ -1837,6 +1908,9 @@ export default function App() {
           <strong>{completed ? '扩图已完成' : '智能扩图生成中'}</strong>
           <small>{completed ? '已自动插入画布' : `${outpaintJobModel} · ${genTimer}s`}</small>
         </span>
+        {!completed && (
+          <button className="generation-mini-cancel" onClick={() => cancelActiveGeneration('outpaint')}>取消</button>
+        )}
         <button
           onClick={() => {
             if (completed) {
@@ -1865,6 +1939,9 @@ export default function App() {
           <strong>{completed ? '换装已完成' : '万物上身生成中'}</strong>
           <small>{completed ? '已自动插入画布' : `${tryOnJobModel} · ${genTimer}s`}</small>
         </span>
+        {!completed && (
+          <button className="generation-mini-cancel" onClick={() => cancelActiveGeneration('tryon')}>取消</button>
+        )}
         <button
           onClick={() => {
             if (completed) {
@@ -1891,6 +1968,10 @@ export default function App() {
           source={outpaintSource}
           isGenerating={isGenerating}
           onCancel={() => {
+            if (isGenerating) {
+              cancelActiveGeneration('outpaint')
+              return
+            }
             backgroundUiModeRef.current = false
             setOutpaintJobState('idle')
             setIsOutpaintMinimized(false)
@@ -1917,6 +1998,10 @@ export default function App() {
           source={tryOnSource}
           isGenerating={isGenerating}
           onCancel={() => {
+            if (isGenerating) {
+              cancelActiveGeneration('tryon')
+              return
+            }
             backgroundUiModeRef.current = false
             setTryOnJobState('idle')
             setIsTryOnMinimized(false)
@@ -1945,11 +2030,12 @@ export default function App() {
           <button onClick={() => runQuickImageAction('outpaint')}><span><ExpandIcon size={15} /></span>智能扩图</button>
           <button
             className={quickCutoutStatus.state !== 'idle' ? `quick-cutout-active ${quickCutoutStatus.state}` : ''}
-            disabled={quickCutoutButtonStatus.busy}
             aria-busy={quickCutoutButtonStatus.busy}
             title={quickCutoutButtonStatus.title}
-            onClick={() => runQuickImageAction('quick-cutout')}
-          ><span><RemoveBackgroundIcon size={15} /></span>{quickCutoutButtonStatus.label}</button>
+            onClick={() => quickCutoutButtonStatus.busy
+              ? cancelQuickCutout('image-menu')
+              : runQuickImageAction('quick-cutout')}
+          ><span><RemoveBackgroundIcon size={15} /></span>{quickCutoutButtonStatus.busy ? '取消抠图' : quickCutoutButtonStatus.label}</button>
           <button onClick={() => runQuickImageAction('try-on')}><span><WardrobeIcon size={15} /></span>万物上身</button>
           <button onClick={() => runQuickImageAction('angles', '基于当前人物或商品生成不同拍摄角度，保持主体、服装与场景一致')}><span><CubeIcon size={15} /></span>多角度</button>
           <button onClick={() => runQuickImageAction('adjust', '优化选中图片的色彩、光影、对比度与商业质感，保持内容不变')}><span><SlidersIcon size={15} /></span>画面调整</button>
@@ -2295,10 +2381,13 @@ export default function App() {
         </button>
         <button
           className={`v2-quick-btn ${quickCutoutStatus.state !== 'idle' ? `quick-cutout-active ${quickCutoutStatus.state}` : ''}`}
-          disabled={quickCutoutButtonStatus.busy}
           aria-busy={quickCutoutButtonStatus.busy}
           title={quickCutoutButtonStatus.title}
           onClick={() => {
+            if (quickCutoutButtonStatus.busy) {
+              cancelQuickCutout('panel')
+              return
+            }
             if (quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current) return
             if (references.length === 0) {
               setToast({ message: '快速抠图需要先上传或选择一张参考图', type: 'warning' })
@@ -2309,12 +2398,14 @@ export default function App() {
             beginQuickCutoutStatus('panel')
             void referenceToQuickCutoutSource(source, apiProfileRef.current?.virseRelayUrl).then((quickSource) => {
               clearQuickCutoutPreparationTimeout()
+              if (quickCutoutCancelRequestedRef.current) return
               void executeQuickCutout(quickSource).finally(() => {
                 quickCutoutPreparationRef.current = false
               })
             }).catch((error) => {
               clearQuickCutoutPreparationTimeout()
               quickCutoutPreparationRef.current = false
+              if (quickCutoutCancelRequestedRef.current) return
               const reason = quickCutoutReasonToChinese(error?.message || String(error))
               finishQuickCutoutStatus('error', reason, 'panel')
               setToast({ message: `快速抠图准备失败：${reason}`, type: 'warning' })
@@ -2322,7 +2413,7 @@ export default function App() {
           }}
         >
           <ScissorsIcon size={14} />
-          <span>{quickCutoutButtonStatus.label}</span>
+          <span>{quickCutoutButtonStatus.busy ? '取消抠图' : quickCutoutButtonStatus.label}</span>
         </button>
         <button
           className="v2-quick-btn"
@@ -2422,7 +2513,10 @@ export default function App() {
               <span className="v2-pulse-dot" />
               <span>MICAS AI 商业级大图渲染中</span>
             </div>
-            <span className="v2-loading-timer">{genTimer}s</span>
+            <div className="v2-loading-actions">
+              <span className="v2-loading-timer">{genTimer}s</span>
+              <button type="button" onClick={() => cancelActiveGeneration()}>取消生成</button>
+            </div>
           </div>
 
           <div className="v2-skeleton-preview-box">
@@ -2601,13 +2695,12 @@ export default function App() {
 
         <button
           className={`v2-generate-submit-btn ${isGenerating ? 'generating' : ''}`}
-          disabled={isGenerating}
-          onClick={() => { void handleGenerate() }}
+          onClick={() => { if (isGenerating) cancelActiveGeneration(); else void handleGenerate() }}
         >
           {isGenerating ? (
             <>
               <div className="v2-spinner-ring" style={{ width: 14, height: 14, borderWidth: 2 }} />
-              <span>生成中 ({genTimer}s)...</span>
+              <span>取消生成 ({genTimer}s)</span>
             </>
           ) : (
             '生成图片'

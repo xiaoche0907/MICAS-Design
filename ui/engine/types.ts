@@ -72,7 +72,7 @@ export interface GeneratedImage {
 
 export interface GenerationJob {
   id?: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   progress?: number
   results?: GeneratedImage[]
   error?: {
@@ -90,11 +90,12 @@ export interface ConnectionResult {
 }
 
 export interface ImageProviderAdapter {
-  testConnection(profile: ApiProfile): Promise<ConnectionResult>
+  testConnection(profile: ApiProfile, signal?: AbortSignal): Promise<ConnectionResult>
 
   submit(
     request: GenerationRequest,
-    profile: ApiProfile
+    profile: ApiProfile,
+    signal?: AbortSignal
   ): Promise<GenerationJob>
 
   poll?(

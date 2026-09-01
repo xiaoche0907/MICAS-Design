@@ -299,7 +299,7 @@ export const OutpaintEditor: React.FC<OutpaintEditorProps> = ({ source, isGenera
           </div>
           {localError && <div className="outpaint-error">{localError}</div>}
           <div className="outpaint-actions">
-            <button onClick={onCancel} disabled={isGenerating || isPreparing}>取消</button>
+            <button onClick={onCancel} disabled={isPreparing}>{isGenerating ? '取消生成' : '取消'}</button>
             <button className="primary" onClick={() => void submit()} disabled={isGenerating || isPreparing}>
               {isPreparing ? '准备画布…' : isGenerating ? '生成中…' : '生成扩图'}
             </button>

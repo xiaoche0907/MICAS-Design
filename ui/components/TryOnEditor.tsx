@@ -414,7 +414,7 @@ export const TryOnEditor: React.FC<TryOnEditorProps> = ({ source, isGenerating, 
           {localError && <div className="outpaint-error">{localError}</div>}
           <div className="tryon-actions">
             <button className="tryon-clear" onClick={() => { assetsRef.current = []; setAssets([]) }} disabled={!assets.length || isGenerating}><TrashIcon size={14} />清空单品</button>
-            <button onClick={onCancel} disabled={isGenerating}>取消</button>
+            <button onClick={onCancel}>{isGenerating ? '取消生成' : '取消'}</button>
             <button className="primary" onClick={() => void submit()} disabled={isGenerating}>{isGenerating ? '生成中…' : '一键 AI 万物上身'}</button>
           </div>
         </aside>

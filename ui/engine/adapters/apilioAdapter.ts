@@ -45,7 +45,7 @@ const parseProviderModels = (payload: any): Array<{ id: string; name?: string; p
 }
 
 export class ApilioAdapter implements ImageProviderAdapter {
-  async testConnection(profile: ApiProfile): Promise<ConnectionResult> {
+  async testConnection(profile: ApiProfile, signal?: AbortSignal): Promise<ConnectionResult> {
     if (!profile.apiKey?.trim()) return { success: false, message: '请先填写柏拉图 API Key' }
     const baseUrl = (profile.baseUrl || DEFAULT_PLATO_BASE_URL).trim().replace(/\/+$/, '')
 
@@ -53,6 +53,7 @@ export class ApilioAdapter implements ImageProviderAdapter {
       const response = await fetch(`${baseUrl}/v1/models`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${profile.apiKey.trim()}` },
+        signal,
       })
       if (!response.ok) {
         const message = await readError(response)
@@ -83,7 +84,7 @@ export class ApilioAdapter implements ImageProviderAdapter {
     }
   }
 
-  async submit(request: GenerationRequest, profile: ApiProfile): Promise<GenerationJob> {
+  async submit(request: GenerationRequest, profile: ApiProfile, signal?: AbortSignal): Promise<GenerationJob> {
     if (!profile.apiKey?.trim()) {
       return { status: 'failed', error: { message: '缺少柏拉图 API Key，请先在设置中配置' } }
     }
@@ -104,7 +105,8 @@ export class ApilioAdapter implements ImageProviderAdapter {
             imageUrl,
             imageHostProvider,
             imageHostApiKey,
-            reference.name
+            reference.name,
+            signal
           )
         }
         referenceUrls.push(imageUrl)
@@ -142,6 +144,7 @@ export class ApilioAdapter implements ImageProviderAdapter {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
+        signal,
       })
       if (!response.ok) {
         return {
@@ -177,6 +180,7 @@ export class ApilioAdapter implements ImageProviderAdapter {
       }
       return { status: 'completed', progress: 100, results }
     } catch (error: any) {
+      if (signal?.aborted || error?.name === 'AbortError') return { status: 'cancelled' }
       return { status: 'failed', error: { message: `柏拉图网络请求失败：${error?.message || error}` } }
     }
   }

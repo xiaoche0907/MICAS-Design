@@ -21,7 +21,7 @@ export class GenerationEngine {
   /**
    * 测试 API 连接
    */
-  async testConnection(profile: ApiProfile): Promise<ConnectionResult> {
+  async testConnection(profile: ApiProfile, signal?: AbortSignal): Promise<ConnectionResult> {
     if (!profile) {
       return { success: false, message: '请先配置 API 参数' }
     }
@@ -32,7 +32,7 @@ export class GenerationEngine {
         message: `暂不支持服务提供商「${profile.provider || '未指定'}」，请选择柏拉图 API 或 Virse。`,
       }
     }
-    return await adapter.testConnection(profile)
+    return await adapter.testConnection(profile, signal)
   }
 
   /**
@@ -40,7 +40,8 @@ export class GenerationEngine {
    */
   async generate(
     request: GenerationRequest,
-    profile: ApiProfile
+    profile: ApiProfile,
+    signal?: AbortSignal
   ): Promise<GenerationJob> {
     if (!profile) {
       return {
@@ -73,7 +74,8 @@ export class GenerationEngine {
       }
     }
 
-    return await adapter.submit(request, profile)
+    if (signal?.aborted) return { status: 'cancelled' }
+    return await adapter.submit(request, profile, signal)
   }
 }
 

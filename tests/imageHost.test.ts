@@ -8,7 +8,7 @@ import { uploadToImageHost } from '../ui/utils/imgbb'
   clearTimeout,
 }
 
-test('ImgBB code 103 remains on ImgBB and never switches providers', async () => {
+test('ImgBB code 103 tries direct and relay without switching providers', async () => {
   const originalFetch = globalThis.fetch
   const requestedUrls: string[] = []
   ;(globalThis as any).fetch = async (input: string | URL | Request) => {
@@ -26,10 +26,36 @@ test('ImgBB code 103 remains on ImgBB and never switches providers', async () =>
   try {
     await assert.rejects(
       () => uploadToImageHost('R0lGODlhAQABAIAAAAUEBA==', 'imgbb', 'imgbb-key'),
-      /ImgBB 禁止了当前账号或请求出口.*103/
+      /ImgBB 直连与 CX Working 中转均被拒绝.*103/
     )
-    assert.ok(requestedUrls.length > 0)
-    assert.ok(requestedUrls.every((url) => url === 'https://www.cxworking.xyz/api/imgbb'))
+    assert.equal(requestedUrls.length, 2)
+    assert.match(requestedUrls[0], /^https:\/\/api\.imgbb\.com\/1\/upload\?key=/)
+    assert.equal(requestedUrls[1], 'https://www.cxworking.xyz/api/imgbb')
+  } finally {
+    ;(globalThis as any).fetch = originalFetch
+  }
+})
+
+test('ImgBB falls back to CX Working when direct upload is unavailable', async () => {
+  const originalFetch = globalThis.fetch
+  const requestedUrls: string[] = []
+  ;(globalThis as any).fetch = async (input: string | URL | Request) => {
+    const url = String(input)
+    requestedUrls.push(url)
+    if (url.startsWith('https://api.imgbb.com/')) {
+      throw new TypeError('Failed to fetch')
+    }
+    return new Response(JSON.stringify({ data: { url: 'https://images.example/imgbb.png' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  try {
+    const result = await uploadToImageHost('R0lGODlhAQABAIAAAAUEBA==', 'imgbb', 'imgbb-key')
+    assert.equal(result, 'https://images.example/imgbb.png')
+    assert.equal(requestedUrls.length, 2)
+    assert.equal(requestedUrls[1], 'https://www.cxworking.xyz/api/imgbb')
   } finally {
     ;(globalThis as any).fetch = originalFetch
   }

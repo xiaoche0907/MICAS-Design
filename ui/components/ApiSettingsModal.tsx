@@ -68,6 +68,8 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
   const [workspacesList, setWorkspacesList] = useState<Array<{ id: string; name: string }>>([])
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [testingAgent, setTestingAgent] = useState(false)
+  const [agentTestResult, setAgentTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [testingImgBb, setTestingImgBb] = useState(false)
   const [imgbbTestResult, setImgBbTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [shortcutDraft, setShortcutDraft] = useState(selectionShortcut)
@@ -79,6 +81,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     setShowAgentKey(false)
     setShowImgBbKey(false)
     setTestResult(null)
+    setAgentTestResult(null)
     setImgBbTestResult(null)
     setShortcutDraft(selectionShortcut)
 
@@ -216,7 +219,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
       setImgBbTestResult({
         success: true,
         message: imageHostProvider === 'imgbb'
-          ? 'ImgBB 连接成功，测试图片将在 60 秒后自动删除。'
+          ? 'ImgBB 连接成功，已自动选择可用的直连或中转链路；测试图片将在 60 秒后删除。'
           : imageHostProvider === 'freeimage'
             ? 'Freeimage.host 连接成功。'
             : 'Uploadcare 连接成功，测试图片将按临时文件处理。',
@@ -224,11 +227,36 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     } catch (error: any) {
       const message = error?.message || String(error)
       const hint = /failed to fetch|networkerror/i.test(message)
-        ? `无法通过 CX Working 连接 ${getImageHostDisplayName(imageHostProvider)}，请检查 cxworking.xyz 的部署和网络。`
+        ? imageHostProvider === 'imgbb'
+          ? '无法通过 ImgBB 直连或 CX Working 中转上传，请检查网络、API Key 和 cxworking.xyz 部署。'
+          : `无法通过 CX Working 连接 ${getImageHostDisplayName(imageHostProvider)}，请检查 cxworking.xyz 的部署和网络。`
         : message
       setImgBbTestResult({ success: false, message: hint })
     } finally {
       setTestingImgBb(false)
+    }
+  }
+
+  const handleTestAgentConnection = async () => {
+    setTestingAgent(true)
+    setAgentTestResult(null)
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 15000)
+    try {
+      const result = await generationEngine.testConnection({
+        ...makeProfile(),
+        provider: 'apilio',
+        baseUrl: agentBaseUrl.trim() || DEFAULT_PLATO_BASE_URL,
+        apiKey: agentApiKey.trim(),
+      }, controller.signal)
+      setAgentTestResult(controller.signal.aborted
+        ? { success: false, message: '智能体连接测试超过 15 秒，请检查 Base URL 或网络。' }
+        : result)
+    } catch (error: any) {
+      setAgentTestResult({ success: false, message: error?.message || String(error) })
+    } finally {
+      window.clearTimeout(timeout)
+      setTestingAgent(false)
     }
   }
 
@@ -376,10 +404,27 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
               </div>
 
               <div className="v2-form-group">
+                <label className="v2-form-label">智能体 Base URL</label>
+                <input
+                  className="v2-form-input"
+                  value={agentBaseUrl}
+                  onChange={(event) => {
+                    setAgentBaseUrl(event.target.value)
+                    setAgentTestResult(null)
+                  }}
+                  placeholder={DEFAULT_PLATO_BASE_URL}
+                  spellCheck={false}
+                />
+              </div>
+
+              <div className="v2-form-group">
                 <label className="v2-form-label">柏拉图智能体 API Key</label>
                 {renderPasswordInput(
                   agentApiKey,
-                  setAgentApiKey,
+                  (value) => {
+                    setAgentApiKey(value)
+                    setAgentTestResult(null)
+                  },
                   showAgentKey,
                   () => setShowAgentKey(!showAgentKey),
                   '填写柏拉图 API Key'
@@ -388,6 +433,25 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                   三个模型逐次轮询；当前模型报错时不等待，立即切换到下一个模型。
                 </span>
               </div>
+
+              {agentTestResult && (
+                <div className={`v2-test-box ${agentTestResult.success ? 'success' : 'error'}`}>
+                  <span className="v2-test-status-icon">
+                    {agentTestResult.success
+                      ? <CheckIcon size={15} color="#34D399" />
+                      : <AlertIcon size={15} color="#F87171" />}
+                  </span>
+                  <span className="v2-test-status-text">{agentTestResult.message}</span>
+                </div>
+              )}
+
+              <button className="v2-test-btn" disabled={testingAgent} onClick={handleTestAgentConnection}>
+                {testingAgent ? (
+                  <><div className="v2-spinner-ring" style={{ width: 14, height: 14, borderWidth: 2 }} /><span>正在测试智能体连接...</span></>
+                ) : (
+                  <><SparklesIcon size={14} color="#FFFFFF" /><span>测试智能体连接</span></>
+                )}
+              </button>
 
               <div className="v2-form-group">
                 <label className="v2-form-label">智能体默认图片模型</label>
@@ -446,7 +510,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                   <div className="v2-image-host-badge">ImgBB</div>
                   <div>
                     <strong>ImgBB 图床（默认）</strong>
-                    <span>通过 CX Working HTTPS 中转上传</span>
+                    <span>直连优先，CX Working 中转兜底</span>
                   </div>
                 </button>
                 <button
@@ -510,7 +574,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                     ? 'Uploadcare 使用 Public Key 从插件 UI 直传，不需要 Secret Key 或中转服务。'
                     : imageHostProvider === 'freeimage'
                       ? 'Freeimage.host 仅通过 CX Working HTTPS 中转上传。'
-                      : 'ImgBB 仅通过 CX Working HTTPS 中转上传，失败时保留 ImgBB 选中状态。'}
+                      : 'ImgBB 会先从插件直连上传；直连受限时自动改用 CX Working HTTPS 中转。'}
                 </span>
                 <a
                   className="v2-key-link"
