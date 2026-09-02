@@ -234,8 +234,8 @@ const requestImageHostUpload = async (
     }
     if (code === 103) {
       throw new Error(
-        'ImgBB 直连与 CX Working 中转均被拒绝（错误 103）。'
-        + '请检查 ImgBB 账号状态或换用新的 API Key。'
+        'ImgBB 上游已禁止当前请求来源（错误 103），直连与 CX Working 中转均被拒绝。'
+        + '这通常是 ImgBB 的来源/IP 限制，换 API Key 也可能无效；请改用 Uploadcare 或 Freeimage.host。'
       )
     }
     throw new Error(

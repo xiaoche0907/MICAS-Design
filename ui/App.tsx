@@ -64,6 +64,30 @@ import {
 } from './components/icons'
 
 const MAX_REFERENCE_IMAGES = 10
+const MAX_CONCURRENT_GENERATIONS = 2
+
+type MainGenerationTaskStatus = 'queued' | 'running' | 'inserting' | 'completed' | 'failed' | 'cancelled'
+
+type MainGenerationTaskView = {
+  id: string
+  title: string
+  detail: string
+  status: MainGenerationTaskStatus
+  startedAt?: number
+  seconds: number
+  error?: string
+}
+
+type MainGenerationTaskExecution = {
+  id: string
+  request: GenerationRequest
+  profile: ApiProfile
+  historyPrompt: string
+  anchorNodeId?: string
+  placementLane?: number
+  controller: AbortController
+}
+
 type QuickCutoutSource = {
   id: string
   name?: string
@@ -107,6 +131,21 @@ function requestRemoteImageBytes(url: string, proxyUrl?: string): Promise<{ byte
       remoteImageByteRequests.delete(requestId)
       pending.reject(new Error('主线程读取远程图片超时'))
     }, 15000)
+  })
+}
+
+function requestImageInsertion(payload: InsertImagePayload): Promise<void> {
+  const requestId = `image-insert-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      imageInsertionRequests.delete(requestId)
+      reject(new Error('插图确认超时'))
+    }, 12000)
+    imageInsertionRequests.set(requestId, { resolve, reject, timeoutId })
+    sendMsgToPlugin({
+      type: UIMessage.INSERT_IMAGES,
+      payload: { images: [payload], requestId },
+    })
   })
 }
 
@@ -641,6 +680,7 @@ export default function App() {
   // 生成状态与结果
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
   const [genTimer, setGenTimer] = useState<number>(0)
+  const [generationTasks, setGenerationTasks] = useState<MainGenerationTaskView[]>([])
   const [quickCutoutStatus, setQuickCutoutStatus] = useState<{
     state: 'idle' | 'working' | 'success' | 'error'
     phase?: QuickCutoutPhase
@@ -663,6 +703,12 @@ export default function App() {
     message: string
     type?: 'success' | 'error' | 'warning' | 'info'
   } | null>(null)
+  const hasActiveMainGeneration = generationTasks.some((task) => (
+    task.status === 'queued' || task.status === 'running' || task.status === 'inserting'
+  ))
+  const activeMainGenerationCount = generationTasks.filter((task) => (
+    task.status === 'queued' || task.status === 'running' || task.status === 'inserting'
+  )).length
 
   // Image requests run inside the plugin UI. Closing or replacing the plugin
   // destroys that runtime, so ask the MasterGo host to confirm before it tears
@@ -672,21 +718,21 @@ export default function App() {
     sendMsgToPlugin({
       type: UIMessage.SET_CLOSE_CONFIRM,
       payload: {
-        enabled: isGenerating,
-        message: isGenerating
+        enabled: isGenerating || hasActiveMainGeneration,
+        message: isGenerating || hasActiveMainGeneration
           ? '图片仍在生成中，现在关闭或切换插件会中断任务。请等待生成完成后再离开。'
           : undefined,
       },
     })
 
-    if (!isGenerating) return
+    if (!isGenerating && !hasActiveMainGeneration) return
     const preventAccidentalUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault()
       event.returnValue = ''
     }
     window.addEventListener('beforeunload', preventAccidentalUnload)
     return () => window.removeEventListener('beforeunload', preventAccidentalUnload)
-  }, [isGenerating])
+  }, [isGenerating, hasActiveMainGeneration])
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const pendingQuickActionRef = useRef<{ kind: string; prompt?: string } | null>(null)
@@ -697,6 +743,16 @@ export default function App() {
   const isGeneratingRef = useRef(false)
   const generationAbortControllerRef = useRef<AbortController | null>(null)
   const awaitingAutomaticInsertRef = useRef(false)
+  const automaticInsertionDepthRef = useRef(0)
+  const automaticInsertGuardTimeoutRef = useRef<number | null>(null)
+  const canvasInsertionQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const mainGenerationBusyRef = useRef(false)
+  const mainGenerationQueueRef = useRef<MainGenerationTaskExecution[]>([])
+  const mainGenerationRunningRef = useRef(0)
+  const mainGenerationControllersRef = useRef<Map<string, AbortController>>(new Map())
+  const mainGenerationPumpRef = useRef<() => void>(() => undefined)
+  const anchorPlacementLanesRef = useRef<Map<string, number>>(new Map())
+  const taskRemovalTimersRef = useRef<Map<string, number>>(new Map())
   const backgroundUiModeRef = useRef(false)
   const quickCutoutWorkflowRef = useRef(new QuickCutoutWorkflow())
   const quickCutoutPreparationRef = useRef(false)
@@ -705,6 +761,38 @@ export default function App() {
   const quickCutoutPreparationTimeoutCancelRef = useRef<(() => void) | null>(null)
   const quickCutoutExportExpiredRef = useRef(false)
   const quickCutoutCancelRequestedRef = useRef(false)
+
+  const beginAutomaticInsertion = () => {
+    automaticInsertionDepthRef.current += 1
+    if (automaticInsertGuardTimeoutRef.current !== null) {
+      window.clearTimeout(automaticInsertGuardTimeoutRef.current)
+      automaticInsertGuardTimeoutRef.current = null
+    }
+    awaitingAutomaticInsertRef.current = true
+  }
+
+  const endAutomaticInsertion = () => {
+    automaticInsertionDepthRef.current = Math.max(0, automaticInsertionDepthRef.current - 1)
+    if (automaticInsertionDepthRef.current > 0) return
+    if (automaticInsertGuardTimeoutRef.current !== null) window.clearTimeout(automaticInsertGuardTimeoutRef.current)
+    automaticInsertGuardTimeoutRef.current = window.setTimeout(() => {
+      awaitingAutomaticInsertRef.current = false
+      automaticInsertGuardTimeoutRef.current = null
+    }, 750)
+  }
+
+  useEffect(() => {
+    if (!hasActiveMainGeneration) return
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      setGenerationTasks((current) => current.map((task) => (
+        task.startedAt && (task.status === 'running' || task.status === 'inserting')
+          ? { ...task, seconds: Math.max(0, Math.floor((now - task.startedAt) / 1000)) }
+          : task
+      )))
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [hasActiveMainGeneration])
 
   const revokeTransientImage = (image: GeneratedImage) => {
     if (!image.transient || !image.url.startsWith('blob:')) return
@@ -723,6 +811,12 @@ export default function App() {
 
   useEffect(() => () => {
     generationAbortControllerRef.current?.abort()
+    mainGenerationControllersRef.current.forEach((controller) => controller.abort())
+    mainGenerationControllersRef.current.clear()
+    mainGenerationQueueRef.current = []
+    taskRemovalTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    taskRemovalTimersRef.current.clear()
+    if (automaticInsertGuardTimeoutRef.current !== null) window.clearTimeout(automaticInsertGuardTimeoutRef.current)
     transientUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
     transientUrlsRef.current.clear()
     remoteImageByteRequests.forEach((pending) => pending.reject(new Error('插件已关闭')))
@@ -807,12 +901,13 @@ export default function App() {
             if (msg.payload.success) insertion.resolve()
             else insertion.reject(new Error(msg.payload.error || '插图失败'))
           }
-          // The inserted image becomes the current MasterGo selection. That
-          // selection event can arrive just after the insertion acknowledgement,
-          // so keep a short guard window and leave the completed result visible.
-          window.setTimeout(() => {
-            awaitingAutomaticInsertRef.current = false
-          }, 750)
+          // Requested insertions release this guard from their owning operation.
+          // Keep this fallback only for legacy fire-and-forget insertion messages.
+          if (!msg.payload.requestId && automaticInsertionDepthRef.current === 0) {
+            window.setTimeout(() => {
+              awaitingAutomaticInsertRef.current = false
+            }, 750)
+          }
           break
         }
 
@@ -1076,6 +1171,7 @@ export default function App() {
         id: `outpaint-source-${image.id}`,
         role: 'composition',
         source: 'mastergo',
+        anchorNodeId: image.id,
         name: image.name,
         mimeType: image.mimeType,
         bytes: image.bytes,
@@ -1098,6 +1194,7 @@ export default function App() {
         id: `tryon-source-${image.id}`,
         role: 'model',
         source: 'mastergo',
+        anchorNodeId: image.id,
         name: image.name,
         mimeType: image.mimeType,
         bytes: image.bytes,
@@ -1177,6 +1274,7 @@ export default function App() {
             id: `ref-mg-${img.id || Date.now()}`,
             role: 'product',
             source: 'mastergo',
+            anchorNodeId: img.id,
             name: img.name,
             mimeType: img.mimeType,
             bytes: img.bytes,
@@ -1380,29 +1478,52 @@ export default function App() {
     })
   }
 
-  const insertGeneratedImages = async (images: GeneratedImage[], automatic = false, signal?: AbortSignal) => {
+  const insertGeneratedImages = async (
+    images: GeneratedImage[],
+    automatic = false,
+    signal?: AbortSignal,
+    anchorNodeId?: string,
+    relayUrlOverride?: string,
+    placementLane?: number
+  ): Promise<boolean> => {
     try {
       setToast({
         message: automatic ? '生成成功，正在自动插入 MasterGo 画布...' : '正在准备插入 MasterGo 画布...',
         type: 'info',
       })
-      const payloads = await Promise.all(images.map((image) => (
-        generatedImageToInsertPayload(image, apiProfileRef.current?.virseRelayUrl, signal)
-      )))
-      if (signal?.aborted) return
-      if (automatic) awaitingAutomaticInsertRef.current = true
-      sendMsgToPlugin({
-        type: UIMessage.INSERT_IMAGES,
-        payload: { images: payloads },
-      })
+      const relayUrl = relayUrlOverride || apiProfileRef.current?.virseRelayUrl
+      const payloads = await Promise.all(images.map(async (image, index) => ({
+        ...(await generatedImageToInsertPayload(image, relayUrl, signal)),
+        anchorNodeId: index === 0 ? anchorNodeId : undefined,
+        placementLane: index === 0 ? placementLane : undefined,
+      })))
+      if (signal?.aborted) return false
+
+      const insertion = async () => {
+        if (signal?.aborted) throw new DOMException('用户已取消', 'AbortError')
+        if (automatic) beginAutomaticInsertion()
+        try {
+          for (const payload of payloads) {
+            if (signal?.aborted) throw new DOMException('用户已取消', 'AbortError')
+            await requestImageInsertion(payload)
+          }
+        } finally {
+          if (automatic) endAutomaticInsertion()
+        }
+      }
+
+      const queuedInsertion = canvasInsertionQueueRef.current.then(insertion, insertion)
+      canvasInsertionQueueRef.current = queuedInsertion.catch(() => undefined)
+      await queuedInsertion
+      return true
     } catch (err: any) {
-      if (signal?.aborted || err?.name === 'AbortError') return
-      if (automatic) awaitingAutomaticInsertRef.current = false
+      if (signal?.aborted || err?.name === 'AbortError') return false
       console.error('插图失败:', err)
       setToast({
         message: `图片已生成，但自动插入失败: ${err?.message || err}`,
         type: 'error',
       })
+      return false
     }
   }
 
@@ -1470,23 +1591,8 @@ export default function App() {
     if (restoreMode === 'panel') setToast({ message: '已取消快速抠图', type: 'info' })
   }
 
-  const requestImageInsertion = (payload: InsertImagePayload): Promise<void> => {
-    const requestId = `quick-cutout-insert-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    return new Promise((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
-        imageInsertionRequests.delete(requestId)
-        reject(new Error('插图确认超时'))
-      }, 12000)
-      imageInsertionRequests.set(requestId, { resolve, reject, timeoutId })
-      sendMsgToPlugin({
-        type: UIMessage.INSERT_IMAGES,
-        payload: { images: [payload], requestId },
-      })
-    })
-  }
-
   const executeQuickCutout = async (source: QuickCutoutSource) => {
-    if (quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current) return
+    if (quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current || mainGenerationBusyRef.current) return
     const restoreMode = source.anchorNodeId ? 'image-menu' : 'panel'
     // Keep the shared ref as a concurrency lock, but do not toggle the React
     // AI-generation state. Toggling it renders the global “generating” card
@@ -1522,21 +1628,24 @@ export default function App() {
             prompt: '快速抠图',
             createdAt: Date.now(),
           }
-          awaitingAutomaticInsertRef.current = true
-          await requestImageInsertion({
-            bytes: output.bytes,
-            mimeType: 'image/png',
-            width: displayWidth,
-            height: displayHeight,
-            anchorNodeId: source.anchorNodeId,
-            name: `${(source.name || 'MasterGo 图片').replace(/\.[^.]+$/, '')}-快速抠图.png`,
-          })
+          beginAutomaticInsertion()
+          try {
+            await requestImageInsertion({
+              bytes: output.bytes,
+              mimeType: 'image/png',
+              width: displayWidth,
+              height: displayHeight,
+              anchorNodeId: source.anchorNodeId,
+              name: `${(source.name || 'MasterGo 图片').replace(/\.[^.]+$/, '')}-快速抠图.png`,
+            })
+          } finally {
+            endAutomaticInsertion()
+          }
           setResults((previous) => {
             const next = mergeGenerationResults([completed], previous)
             persistGenerationHistory(next)
             return next
           })
-          setIsHistoryOpen(true)
         },
       })
 
@@ -1593,8 +1702,128 @@ export default function App() {
     setToast({ message: '已取消本次生成，结果不会插入画布', type: 'info' })
   }
 
-  // 发起 AI 生成
-  const handleGenerate = async () => {
+  const updateMainGenerationTask = (id: string, patch: Partial<MainGenerationTaskView>) => {
+    setGenerationTasks((current) => current.map((task) => (
+      task.id === id ? { ...task, ...patch } : task
+    )))
+  }
+
+  const dismissMainGenerationTask = (id: string) => {
+    const timer = taskRemovalTimersRef.current.get(id)
+    if (timer !== undefined) window.clearTimeout(timer)
+    taskRemovalTimersRef.current.delete(id)
+    setGenerationTasks((current) => current.filter((task) => task.id !== id))
+  }
+
+  const scheduleMainGenerationTaskRemoval = (id: string, delay: number) => {
+    const previous = taskRemovalTimersRef.current.get(id)
+    if (previous !== undefined) window.clearTimeout(previous)
+    const timer = window.setTimeout(() => {
+      taskRemovalTimersRef.current.delete(id)
+      setGenerationTasks((current) => current.filter((task) => task.id !== id))
+    }, delay)
+    taskRemovalTimersRef.current.set(id, timer)
+  }
+
+  const syncMainGenerationBusy = () => {
+    mainGenerationBusyRef.current = (
+      mainGenerationRunningRef.current > 0 || mainGenerationQueueRef.current.length > 0
+    )
+  }
+
+  const runMainGenerationTask = async (execution: MainGenerationTaskExecution) => {
+    const { id, controller } = execution
+    mainGenerationControllersRef.current.set(id, controller)
+    updateMainGenerationTask(id, { status: 'running', startedAt: Date.now(), seconds: 0 })
+
+    try {
+      const job = await generationEngine.generate(execution.request, execution.profile, controller.signal)
+      if (controller.signal.aborted || job.status === 'cancelled') return
+      if (job.status !== 'completed' || !job.results?.length) {
+        const message = job.error?.message || '生成失败，请检查 API 设置'
+        updateMainGenerationTask(id, { status: 'failed', error: message })
+        setToast({ message, type: 'error' })
+        return
+      }
+
+      const completedResults = job.results.map((image) => ({
+        ...image,
+        prompt: execution.historyPrompt,
+      }))
+      setResults((previous) => {
+        const nextResults = mergeGenerationResults(completedResults, previous)
+        persistGenerationHistory(nextResults)
+        return nextResults
+      })
+
+      updateMainGenerationTask(id, { status: 'inserting' })
+      const inserted = await insertGeneratedImages(
+        completedResults,
+        true,
+        controller.signal,
+        execution.anchorNodeId,
+        execution.profile.virseRelayUrl,
+        execution.placementLane
+      )
+      if (controller.signal.aborted) return
+      if (!inserted) {
+        updateMainGenerationTask(id, { status: 'failed', error: '图片已生成，但自动插入画布失败' })
+        return
+      }
+
+      updateMainGenerationTask(id, { status: 'completed' })
+      setToast({ message: '生成完成，图片已自动插入画布', type: 'success' })
+      scheduleMainGenerationTaskRemoval(id, 5000)
+    } catch (err: any) {
+      if (controller.signal.aborted || err?.name === 'AbortError') return
+      const message = `生成请求异常: ${err?.message || err}`
+      updateMainGenerationTask(id, { status: 'failed', error: message })
+      setToast({ message, type: 'error' })
+    } finally {
+      mainGenerationControllersRef.current.delete(id)
+      mainGenerationRunningRef.current = Math.max(0, mainGenerationRunningRef.current - 1)
+      syncMainGenerationBusy()
+      mainGenerationPumpRef.current()
+    }
+  }
+
+  const pumpMainGenerationQueue = () => {
+    while (
+      mainGenerationRunningRef.current < MAX_CONCURRENT_GENERATIONS
+      && mainGenerationQueueRef.current.length > 0
+    ) {
+      const execution = mainGenerationQueueRef.current.shift()
+      if (!execution || execution.controller.signal.aborted) continue
+      mainGenerationRunningRef.current += 1
+      syncMainGenerationBusy()
+      void runMainGenerationTask(execution)
+    }
+    syncMainGenerationBusy()
+  }
+  mainGenerationPumpRef.current = pumpMainGenerationQueue
+
+  const cancelMainGenerationTask = (id: string) => {
+    const queuedIndex = mainGenerationQueueRef.current.findIndex((task) => task.id === id)
+    if (queuedIndex >= 0) {
+      const [queued] = mainGenerationQueueRef.current.splice(queuedIndex, 1)
+      queued.controller.abort()
+      updateMainGenerationTask(id, { status: 'cancelled' })
+      syncMainGenerationBusy()
+      scheduleMainGenerationTaskRemoval(id, 2500)
+      setToast({ message: '已取消排队任务', type: 'info' })
+      return
+    }
+
+    const controller = mainGenerationControllersRef.current.get(id)
+    if (!controller || controller.signal.aborted) return
+    controller.abort()
+    updateMainGenerationTask(id, { status: 'cancelled' })
+    scheduleMainGenerationTaskRemoval(id, 2500)
+    setToast({ message: '已取消该生成任务', type: 'info' })
+  }
+
+  // 发起一个可后台运行的 AI 生成任务。
+  const handleGenerate = () => {
     const currentApiProfile = apiProfileRef.current || apiProfile
     if (!prompt.trim()) {
       setToast({ message: '请描述你想生成的图片内容', type: 'warning' })
@@ -1613,57 +1842,69 @@ export default function App() {
       return
     }
 
-    const controller = createGenerationController()
-    isGeneratingRef.current = true
-    awaitingAutomaticInsertRef.current = false
-    setQuickSelection(null)
-    sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
-    setIsGenerating(true)
-    setGenTimer(0)
-    const timerInterval = setInterval(() => {
-      setGenTimer((t) => t + 1)
-    }, 1000)
+    if (isGeneratingRef.current || quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive) {
+      setToast({ message: '当前正在执行扩图、换装或快速抠图，请完成后再提交新任务', type: 'warning' })
+      return
+    }
 
-    setToast({ message: 'MICAS AI 正在为您生成商业视觉大图...', type: 'info' })
-
+    const referenceSnapshot = references.map((reference) => ({ ...reference }))
+    const profileSnapshot: ApiProfile = {
+      ...currentApiProfile,
+      modelIdMap: currentApiProfile.modelIdMap ? { ...currentApiProfile.modelIdMap } : undefined,
+    }
+    const promptSnapshot = prompt.trim()
+    const styleAgentSnapshot = activeStyleAgent
     const request: GenerationRequest = {
-      intent: references.length > 0 ? 'edit' : 'generate',
-      prompt: activeStyleAgent ? composeStyleAgentPrompt(activeStyleAgent, prompt) : prompt,
-      model: selectedModel,
-      references,
+      intent: referenceSnapshot.length > 0 ? 'edit' : 'generate',
+      prompt: styleAgentSnapshot ? composeStyleAgentPrompt(styleAgentSnapshot, promptSnapshot) : promptSnapshot,
+      model: { ...selectedModel },
+      references: referenceSnapshot,
       aspectRatio,
       resolution,
       outputCount,
     }
-
-    try {
-      const job = await generationEngine.generate(request, currentApiProfile, controller.signal)
-      if (controller.signal.aborted || job.status === 'cancelled') return
-      if (job.status === 'completed' && job.results) {
-        const completedResults = activeStyleAgent
-          ? job.results.map((image) => ({ ...image, prompt: `[${activeStyleAgent.name}] ${prompt.trim()}` }))
-          : job.results
-        setResults((prev) => {
-          const nextResults = mergeGenerationResults(completedResults, prev)
-          persistGenerationHistory(nextResults)
-          return nextResults
-        })
-        setIsHistoryOpen(true)
-        await insertGeneratedImages(completedResults, true, controller.signal)
-      } else {
-        setToast({ message: job.error?.message || '生成失败，请检查 API 设置', type: 'error' })
-      }
-    } catch (err: any) {
-      if (controller.signal.aborted || err?.name === 'AbortError') return
-      setToast({ message: `生成请求异常: ${err?.message || err}`, type: 'error' })
-    } finally {
-      clearInterval(timerInterval)
-      if (generationAbortControllerRef.current === controller) {
-        generationAbortControllerRef.current = null
-        isGeneratingRef.current = false
-        setIsGenerating(false)
-      }
+    const taskId = `generation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const sourceName = referenceSnapshot[0]?.name?.replace(/\.[^.]+$/, '') || promptSnapshot
+    const shortSourceName = sourceName.length > 22 ? `${sourceName.slice(0, 22)}…` : sourceName
+    const taskTitle = styleAgentSnapshot ? `${styleAgentSnapshot.name} · ${shortSourceName}` : shortSourceName
+    const historyPrompt = styleAgentSnapshot
+      ? `[${styleAgentSnapshot.name}] ${promptSnapshot}`
+      : promptSnapshot
+    const controller = new AbortController()
+    const anchorNodeId = referenceSnapshot.find((reference) => reference.anchorNodeId)?.anchorNodeId
+    const placementLane = anchorNodeId ? (anchorPlacementLanesRef.current.get(anchorNodeId) || 0) : undefined
+    if (anchorNodeId) {
+      anchorPlacementLanesRef.current.set(anchorNodeId, (placementLane || 0) + Math.max(1, outputCount))
     }
+    const execution: MainGenerationTaskExecution = {
+      id: taskId,
+      request,
+      profile: profileSnapshot,
+      historyPrompt,
+      anchorNodeId,
+      placementLane,
+      controller,
+    }
+
+    setGenerationTasks((current) => [{
+      id: taskId,
+      title: taskTitle,
+      detail: `${selectedModel.displayName} · ${resolution} · ${outputCount} 张`,
+      status: 'queued',
+      seconds: 0,
+    }, ...current])
+    mainGenerationQueueRef.current.push(execution)
+    mainGenerationBusyRef.current = true
+    setQuickSelection(null)
+    sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
+    pumpMainGenerationQueue()
+    const queuedCount = Math.max(0, mainGenerationQueueRef.current.length)
+    setToast({
+      message: queuedCount > 0
+        ? `任务已排队，当前最多同时生成 ${MAX_CONCURRENT_GENERATIONS} 项`
+        : '任务已挂到顶部，可继续准备下一个产品',
+      type: 'info',
+    })
   }
 
   const handleOutpaintGenerate = async ({
@@ -1673,6 +1914,10 @@ export default function App() {
     modelId: outpaintModelId,
     resolution: outpaintResolution,
   }: OutpaintPayload) => {
+    if (mainGenerationBusyRef.current) {
+      setToast({ message: '为避免画布落点冲突，请等待顶部生成任务完成后再使用智能扩图', type: 'warning' })
+      return
+    }
     if (!apiProfile || !apiProfile.apiKey) {
       setOutpaintSource(null)
       sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
@@ -1729,8 +1974,7 @@ export default function App() {
         persistGenerationHistory(nextResults)
         return nextResults
       })
-      setIsHistoryOpen(true)
-      await insertGeneratedImages(completedResults, true, controller.signal)
+      await insertGeneratedImages(completedResults, true, controller.signal, reference.anchorNodeId)
       setOutpaintSource(null)
       setOutpaintJobState('success')
       setIsOutpaintMinimized(false)
@@ -1761,6 +2005,10 @@ export default function App() {
     resolution: tryOnResolution,
     poseLocked,
   }: TryOnPayload) => {
+    if (mainGenerationBusyRef.current) {
+      setToast({ message: '为避免画布落点冲突，请等待顶部生成任务完成后再使用万物上身', type: 'warning' })
+      return
+    }
     if (!apiProfile || !apiProfile.apiKey) {
       setTryOnSource(null)
       sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
@@ -1817,8 +2065,7 @@ export default function App() {
         persistGenerationHistory(nextResults)
         return nextResults
       })
-      setIsHistoryOpen(true)
-      await insertGeneratedImages(completedResults, true, controller.signal)
+      await insertGeneratedImages(completedResults, true, controller.signal, tryOnSource?.anchorNodeId)
       setTryOnSource(null)
       setTryOnJobState('success')
       setIsTryOnMinimized(false)
@@ -1853,7 +2100,10 @@ export default function App() {
 
   const runQuickImageAction = (kind: string, promptValue?: string) => {
     if (kind === 'quick-cutout') {
-      if (quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current) return
+      if (quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current || mainGenerationBusyRef.current) {
+        setToast({ message: '请等待当前生成任务完成后再使用快速抠图', type: 'warning' })
+        return
+      }
       quickCutoutPreparationRef.current = true
       // Publish the pending action before any UI state updates. This removes a
       // race where a very fast export response arrived before the action was
@@ -2127,6 +2377,71 @@ export default function App() {
         </div>
       </header>
 
+      {/* 顶部后台生成任务：不阻断主编辑区继续提交新产品。 */}
+      {generationTasks.length > 0 && (
+        <section className="v2-generation-task-stack" aria-label="后台生成任务">
+          <div className="v2-generation-task-head">
+            <div>
+              <span className="v2-generation-task-live-dot" />
+              <strong>后台生成</strong>
+            </div>
+            <small>
+              {activeMainGenerationCount > 0
+                ? `${activeMainGenerationCount} 项处理中 · 最多并行 ${MAX_CONCURRENT_GENERATIONS} 项`
+                : '任务已结束'}
+            </small>
+          </div>
+          <div className="v2-generation-task-list">
+            {generationTasks.map((task) => {
+              const isActive = task.status === 'queued' || task.status === 'running' || task.status === 'inserting'
+              const statusLabel = {
+                queued: '排队中',
+                running: '生成中',
+                inserting: '插入画布',
+                completed: '已完成',
+                failed: '失败',
+                cancelled: '已取消',
+              }[task.status]
+              return (
+                <article key={task.id} className={`v2-generation-task-item ${task.status}`}>
+                  <span className="v2-generation-task-state" aria-hidden="true">
+                    {isActive ? <span className="v2-generation-task-spinner" /> : task.status === 'completed' ? '✓' : '!'}
+                  </span>
+                  <span className="v2-generation-task-copy">
+                    <strong title={task.title}>{task.title}</strong>
+                    <small title={task.error || task.detail}>{task.error || task.detail}</small>
+                  </span>
+                  <span className="v2-generation-task-meta">
+                    <strong>{statusLabel}</strong>
+                    {(task.status === 'running' || task.status === 'inserting') && <small>{task.seconds}s</small>}
+                  </span>
+                  {task.status === 'queued' || task.status === 'running' ? (
+                    <button
+                      type="button"
+                      className="v2-generation-task-cancel"
+                      onClick={() => cancelMainGenerationTask(task.id)}
+                    >
+                      取消
+                    </button>
+                  ) : task.status === 'inserting' ? (
+                    <span className="v2-generation-task-action-placeholder" />
+                  ) : (
+                    <button
+                      type="button"
+                      className="v2-generation-task-dismiss"
+                      aria-label="关闭任务提示"
+                      onClick={() => dismissMainGenerationTask(task.id)}
+                    >
+                      ×
+                    </button>
+                  )}
+                </article>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
       {/* 2. Gallery 从预设快速创建卡片 */}
       <div className="v2-gallery-card" onClick={() => setIsCommunityOpen(true)}>
         <div className="v2-gallery-left">
@@ -2388,7 +2703,10 @@ export default function App() {
               cancelQuickCutout('panel')
               return
             }
-            if (quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current) return
+            if (quickCutoutPreparationRef.current || quickCutoutWorkflowRef.current.isActive || isGeneratingRef.current || mainGenerationBusyRef.current) {
+              setToast({ message: '请等待当前生成任务完成后再使用快速抠图', type: 'warning' })
+              return
+            }
             if (references.length === 0) {
               setToast({ message: '快速抠图需要先上传或选择一张参考图', type: 'warning' })
               return
@@ -2694,17 +3012,12 @@ export default function App() {
         </button>
 
         <button
-          className={`v2-generate-submit-btn ${isGenerating ? 'generating' : ''}`}
-          onClick={() => { if (isGenerating) cancelActiveGeneration(); else void handleGenerate() }}
+          className="v2-generate-submit-btn"
+          onClick={handleGenerate}
         >
-          {isGenerating ? (
-            <>
-              <div className="v2-spinner-ring" style={{ width: 14, height: 14, borderWidth: 2 }} />
-              <span>取消生成 ({genTimer}s)</span>
-            </>
-          ) : (
-            '生成图片'
-          )}
+          {activeMainGenerationCount > 0
+            ? `继续生成（${activeMainGenerationCount} 项处理中）`
+            : '生成图片'}
         </button>
       </div>
 

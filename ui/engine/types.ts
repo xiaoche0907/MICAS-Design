@@ -16,6 +16,8 @@ export interface ReferenceImage {
   id: string
   role: ReferenceRole
   source: 'upload' | 'mastergo'
+  /** Original MasterGo node used to keep generated output beside its source product. */
+  anchorNodeId?: string
   name?: string
   mimeType: string
   bytes?: Uint8Array

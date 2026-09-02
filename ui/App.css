@@ -35,6 +35,7 @@ body {
   box-sizing: border-box;
   position: relative;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 /* 顶栏 Header */
@@ -97,6 +98,144 @@ body {
   border-color: #737373;
   background: #292929;
 }
+
+/* Compact background-generation queue. */
+.v2-generation-task-stack {
+  flex: 0 0 auto;
+  padding: 8px;
+  background: #18181B;
+  border: 1px solid #34343A;
+  border-radius: 10px;
+}
+
+.v2-generation-task-head,
+.v2-generation-task-head > div,
+.v2-generation-task-item,
+.v2-generation-task-meta {
+  display: flex;
+  align-items: center;
+}
+
+.v2-generation-task-head {
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 7px;
+}
+
+.v2-generation-task-head > div { gap: 6px; }
+.v2-generation-task-head strong { color: #F4F4F5; font-size: 11px; }
+.v2-generation-task-head small { color: #77777F; font-size: 9px; }
+
+.v2-generation-task-live-dot {
+  width: 6px;
+  height: 6px;
+  background: #A78BFA;
+  border-radius: 50%;
+}
+
+.v2-generation-task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.v2-generation-task-item {
+  min-width: 0;
+  min-height: 42px;
+  gap: 8px;
+  padding: 6px 7px;
+  background: #111113;
+  border: 1px solid #2D2D32;
+  border-radius: 8px;
+}
+
+.v2-generation-task-item.completed { border-color: #3F4A43; }
+.v2-generation-task-item.failed { border-color: #633B3B; }
+.v2-generation-task-item.cancelled { opacity: 0.65; }
+
+.v2-generation-task-state {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #D4D4D8;
+  background: #242428;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.v2-generation-task-item.completed .v2-generation-task-state {
+  color: #D1FAE5;
+  background: #18352B;
+}
+
+.v2-generation-task-item.failed .v2-generation-task-state {
+  color: #FECACA;
+  background: #422020;
+}
+
+.v2-generation-task-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #5A5A62;
+  border-top-color: #F4F4F5;
+  border-radius: 50%;
+  animation: spinRing 0.8s linear infinite;
+}
+
+.v2-generation-task-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.v2-generation-task-copy strong,
+.v2-generation-task-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-generation-task-copy strong { color: #E4E4E7; font-size: 10px; }
+.v2-generation-task-copy small { color: #77777F; font-size: 8px; }
+
+.v2-generation-task-meta {
+  flex: 0 0 auto;
+  min-width: 44px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.v2-generation-task-meta strong { color: #B8B8BE; font-size: 8px; font-weight: 650; }
+.v2-generation-task-meta small { color: #707078; font-size: 8px; }
+
+.v2-generation-task-cancel,
+.v2-generation-task-dismiss {
+  flex: 0 0 auto;
+  height: 24px;
+  color: #A1A1AA;
+  background: transparent;
+  border: 1px solid #3A3A40;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.v2-generation-task-cancel { padding: 0 7px; }
+.v2-generation-task-dismiss { width: 24px; padding: 0; font-size: 13px; }
+.v2-generation-task-action-placeholder { flex: 0 0 24px; width: 24px; }
+.v2-generation-task-cancel:hover { color: #FCA5A5; border-color: #7F4747; }
+.v2-generation-task-dismiss:hover { color: #FFFFFF; background: #29292E; }
 
 .v2-toolbar-toggle { padding-left: 7px; padding-right: 8px; }
 .v2-toolbar-switch {
@@ -372,20 +511,21 @@ body {
 /* Compact reference upload bar */
 .v2-ref-dashed-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 34px;
+  grid-template-columns: auto minmax(0, 1fr) 40px;
   align-items: start;
-  gap: 6px;
-  min-height: 46px;
+  gap: 8px;
+  min-height: 66px;
   box-sizing: border-box;
-  padding: 5px 6px;
+  padding: 8px;
   background-color: var(--bg-card);
   border-radius: 9px;
+  flex: 0 0 auto;
 }
 
 .v2-ref-left {
   width: auto;
   min-width: 0;
-  height: 34px;
+  height: 48px;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -444,15 +584,16 @@ body {
 
 .v2-ref-add-anchor {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
+  margin-top: 4px;
 }
 
 .v2-ref-inline-thumb-wrapper {
-  width: 42px;
-  height: 42px;
-  flex: 0 0 42px;
-  border-radius: 7px;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-radius: 8px;
 }
 
 .v2-ref-number-badge {
@@ -471,9 +612,9 @@ body {
 }
 
 .v2-ref-add-btn {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   padding: 0;
 }
 

@@ -61,6 +61,8 @@ export interface InsertImagePayload {
   name?: string
   /** Keep placement relative to the original node even if selection changes. */
   anchorNodeId?: string
+  /** Horizontal output slot reserved beside a shared anchor to prevent overlap. */
+  placementLane?: number
 }
 
 export interface InsertImagesPayload {

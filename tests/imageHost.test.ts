@@ -26,7 +26,7 @@ test('ImgBB code 103 tries direct and relay without switching providers', async 
   try {
     await assert.rejects(
       () => uploadToImageHost('R0lGODlhAQABAIAAAAUEBA==', 'imgbb', 'imgbb-key'),
-      /ImgBB 直连与 CX Working 中转均被拒绝.*103/
+      /ImgBB 上游已禁止当前请求来源.*103/
     )
     assert.equal(requestedUrls.length, 2)
     assert.match(requestedUrls[0], /^https:\/\/api\.imgbb\.com\/1\/upload\?key=/)

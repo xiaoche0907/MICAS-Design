@@ -537,7 +537,8 @@ async function insertImageToCanvas(payload: InsertImagePayload, requestId?: stri
     if (anchoredTarget || selection.length > 0) {
       const target = anchoredTarget || selection[0] as any
       const bounds = target.absoluteBoundingBox || target
-      rect.x = (bounds.x || 0) + (bounds.width || 0) + 40
+      const placementLane = anchoredTarget ? Math.max(0, payload.placementLane || 0) : 0
+      rect.x = (bounds.x || 0) + (bounds.width || 0) + 40 + placementLane * (w + 40)
       rect.y = bounds.y || 0
     } else {
       const center = mg.viewport.center

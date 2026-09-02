@@ -27,6 +27,7 @@ try {
     const testFiles = [
       path.join(outDir, 'tests', 'quickCutout.test.js'),
       path.join(outDir, 'tests', 'imageHost.test.js'),
+      path.join(root, 'tests', 'freeimageRelay.test.cjs'),
     ]
     const run = childProcess.spawnSync(process.execPath, ['--test', ...testFiles], { cwd: root, stdio: 'inherit' })
     process.exitCode = run.status || 0
