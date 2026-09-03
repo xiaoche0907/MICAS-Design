@@ -412,7 +412,7 @@ export class VirseAdapter implements ImageProviderAdapter {
         return {
           success: true,
           baseUrl: candidate,
-          message: `Virse MCP 连接成功；${candidate.includes('dev.') ? 'Dev 节点' : 'API 节点'}；工作区/画布 ${workspaces.length} 个；自动匹配模型 ${Object.keys(matchedModels).length}/4`,
+          message: `Virse MCP 连接成功；${candidate.includes('dev.') ? 'Dev 节点' : 'API 节点'}；工作区/画布 ${workspaces.length} 个；可用模型 ${models.length} 个`,
           workspaces: workspaces.map((workspace) => ({
             id: encodeWorkspace(workspace),
             name: workspace.name,
@@ -487,13 +487,20 @@ export class VirseAdapter implements ImageProviderAdapter {
       const landscape = ratioWidth >= ratioHeight
       let modelId = profile.modelIdMap?.[request.model.id]
         || (request.model.provider === 'virse' ? request.model.modelId : '')
+        || request.model.modelId
+        || request.model.id
+
       if (!modelId) {
-        const modelResult = await this.callTool(profile, 'list_image_models', {}, signal)
-        const discoveredMap = matchProviderModels(parseVirseModels(modelResult.data))
-        modelId = discoveredMap[request.model.id]
+        try {
+          const modelResult = await this.callTool(profile, 'list_image_models', {}, signal)
+          const discoveredMap = matchProviderModels(parseVirseModels(modelResult.data))
+          modelId = discoveredMap[request.model.id] || request.model.modelId || request.model.id
+        } catch (_) {
+          modelId = request.model.modelId || request.model.id
+        }
       }
       if (!modelId) {
-        throw new Error(`Virse 的 list_image_models 未找到“${request.model.displayName}”对应的模型 id，请重新测试连接`)
+        throw new Error(`Virse 未找到“${request.model.displayName}”对应的模型 ID`)
       }
       const generated = await this.callTool(profile, 'generate_image', {
         prompt: composePromptWithRoles(request.prompt, request.references),
@@ -567,10 +574,13 @@ export class VirseAdapter implements ImageProviderAdapter {
     const first = request.references[0]
     if (!first?.width || !first?.height) return '2:3'
     const ratio = first.width / first.height
-    if (ratio > 1.35) return '16:9'
-    if (ratio > 1.08) return '4:3'
-    if (ratio < 0.65) return '9:16'
-    if (ratio < 0.82) return '2:3'
-    return '1:1'
+    if (ratio > 2.0) return '21:9'
+    if (ratio > 1.45) return '16:9'
+    if (ratio > 1.15) return '4:3'
+    if (ratio > 0.9) return '1:1'
+    if (ratio > 0.75) return '4:5'
+    if (ratio > 0.6) return '3:4'
+    if (ratio > 0.5) return '2:3'
+    return '9:16'
   }
 }

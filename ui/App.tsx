@@ -37,6 +37,7 @@ import sceneFissionAgentPrompt from '../AI模特场景图裂变_Agent提示词.m
 import urbanStyleFissionGridPrompt from '../城市风格裂变9宫格_Agent提示词.md?raw'
 import outfitExtractionAgentPrompt from '../AI 穿搭拆解与白底搭配全览生成 Agent｜System Prompt (1).md?raw'
 import { ApiSettingsModal } from './components/ApiSettingsModal'
+import { ModelSelectModal, getModelIcon } from './components/ModelSelectModal'
 import { ResultViewer } from './components/ResultViewer'
 import { Toast } from './components/Toast'
 import { OutpaintEditor, OutpaintPayload } from './components/OutpaintEditor'
@@ -230,8 +231,10 @@ const ASPECT_RATIO_VALUES: Record<string, number> = {
   '2:3': 2 / 3,
   '3:4': 3 / 4,
   '4:5': 4 / 5,
+  '4:3': 4 / 3,
   '16:9': 16 / 9,
   '9:16': 9 / 16,
+  '21:9': 21 / 9,
 }
 
 function inferReferenceAspectRatio(
@@ -603,7 +606,7 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<ExtendedModelDefinition>(getModelById(DEFAULT_MODEL_ID))
   const selectedModelRef = useRef(selectedModel)
   selectedModelRef.current = selectedModel
-  const [isModelMenuOpen, setIsModelMenuOpen] = useState<boolean>(false)
+  const [isModelModalOpen, setIsModelModalOpen] = useState<boolean>(false)
   const availableModels = useMemo(() => getModelsForProfile(apiProfile), [apiProfile])
 
   useEffect(() => {
@@ -620,6 +623,15 @@ export default function App() {
     const inferredRatio = inferReferenceAspectRatio(references[0], selectedModel.supportedRatios)
     if (inferredRatio) setAspectRatio(inferredRatio)
   }, [activeStyleAgent, references, selectedModel])
+
+  useEffect(() => {
+    if (selectedModel.supportedRatios && selectedModel.supportedRatios.length > 0 && !selectedModel.supportedRatios.includes(aspectRatio)) {
+      setAspectRatio(selectedModel.supportedRatios.includes('2:3') ? '2:3' : selectedModel.supportedRatios[0])
+    }
+    if (selectedModel.supportedResolutions && selectedModel.supportedResolutions.length > 0 && !selectedModel.supportedResolutions.includes(resolution)) {
+      setResolution(selectedModel.supportedResolutions.includes('2K') ? '2K' : (selectedModel.supportedResolutions[selectedModel.supportedResolutions.length - 1] as '1K' | '2K' | '4K'))
+    }
+  }, [selectedModel])
 
   // 参数面板浮层控制
   const [isParamPanelOpen, setIsParamPanelOpen] = useState<boolean>(false)
@@ -2870,32 +2882,13 @@ export default function App() {
           <div className="v2-model-selector-wrapper">
             <button
               className="v2-model-select-btn"
-              onClick={() => setIsModelMenuOpen(!isModelMenuOpen)}
+              title="点击打开模型选择弹窗"
+              onClick={() => setIsModelModalOpen(true)}
             >
               <span>{getModelIcon(selectedModel.iconType)}</span>
               <span>{selectedModel.displayName}</span>
               <span>▲</span>
             </button>
-
-            {isModelMenuOpen && (
-              <div className="v2-model-menu-floating">
-                {availableModels.map((m) => (
-                  <div
-                    key={m.id}
-                    className={`v2-model-menu-item ${
-                      selectedModel.id === m.id ? 'selected' : ''
-                    }`}
-                    onClick={() => {
-                      setSelectedModel(m)
-                      setIsModelMenuOpen(false)
-                    }}
-                  >
-                    <span className="model-brand-icon">{getModelIcon(m.iconType)}</span>
-                    <span>{m.displayName}</span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -3145,24 +3138,17 @@ export default function App() {
 
           <div className="v2-popover-row">
             <div className="v2-resolution-capsule">
-              <button
-                className={`v2-capsule-btn ${resolution === '1K' ? 'active' : ''}`}
-                onClick={() => setResolution('1K')}
-              >
-                1K
-              </button>
-              <button
-                className={`v2-capsule-btn ${resolution === '2K' ? 'active' : ''}`}
-                onClick={() => setResolution('2K')}
-              >
-                2K
-              </button>
-              <button
-                className={`v2-capsule-btn ${resolution === '4K' ? 'active' : ''}`}
-                onClick={() => setResolution('4K')}
-              >
-                4K
-              </button>
+              {(['1K', '2K', '4K'] as const)
+                .filter((res) => !selectedModel.supportedResolutions || selectedModel.supportedResolutions.includes(res))
+                .map((res) => (
+                  <button
+                    key={res}
+                    className={`v2-capsule-btn ${resolution === res ? 'active' : ''}`}
+                    onClick={() => setResolution(res)}
+                  >
+                    {res}
+                  </button>
+                ))}
             </div>
             <span className="v2-time-estimate">
               {resolution === '4K' ? '预计 90 ~ 180s' : '预计 40 ~ 60s'}
@@ -3178,18 +3164,22 @@ export default function App() {
                 { id: '2:3', label: '2:3 竖图', icon: '📱' },
                 { id: '3:4', label: '3:4 电商', icon: '📱' },
                 { id: '4:5', label: '4:5 社交', icon: '📱' },
+                { id: '4:3', label: '4:3 横图', icon: '💻' },
                 { id: '16:9', label: '16:9 横屏', icon: '💻' },
                 { id: '9:16', label: '9:16 海报', icon: '📲' },
-              ].map((r) => (
-                <button
-                  key={r.id}
-                  className={`v2-ratio-capsule-item ${aspectRatio === r.id ? 'active' : ''}`}
-                  onClick={() => setAspectRatio(r.id)}
-                >
-                  <span className="ratio-icon">{r.icon}</span>
-                  <span>{r.label}</span>
-                </button>
-              ))}
+                { id: '21:9', label: '21:9 宽屏', icon: '🖥' },
+              ]
+                .filter((r) => !selectedModel.supportedRatios || selectedModel.supportedRatios.includes(r.id))
+                .map((r) => (
+                  <button
+                    key={r.id}
+                    className={`v2-ratio-capsule-item ${aspectRatio === r.id ? 'active' : ''}`}
+                    onClick={() => setAspectRatio(r.id)}
+                  >
+                    <span className="ratio-icon">{r.icon}</span>
+                    <span>{r.label}</span>
+                  </button>
+                ))}
             </div>
           </div>
         </div>
@@ -3242,6 +3232,15 @@ export default function App() {
           sendMsgToPlugin({ type: UIMessage.SAVE_API_PROFILE, payload: prof })
           setIsSettingsOpen(false)
         }}
+      />
+
+      {/* 模型选择 Modal */}
+      <ModelSelectModal
+        isOpen={isModelModalOpen}
+        models={availableModels}
+        selectedModelId={selectedModel.id}
+        onSelectModel={(m) => setSelectedModel(m)}
+        onClose={() => setIsModelModalOpen(false)}
       />
 
       {/* 全局 Toast */}

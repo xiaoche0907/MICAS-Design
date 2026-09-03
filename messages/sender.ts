@@ -28,6 +28,8 @@ export interface ApiProfile {
   imgbbApiKey?: string
   uploadcarePublicKey?: string
   freeimageApiKey?: string
+  /** 自定义图床中转域名 (如在 Vercel 部署的域名)，缺省为 https://www.cxworking.xyz */
+  imageRelayUrl?: string
   workspaceId?: string
   /** HTTPS endpoint of the Virse MCP relay, for example https://example.com/api/virse. */
   virseRelayUrl?: string

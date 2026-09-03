@@ -25,7 +25,9 @@ import {
 
 const DEFAULT_VIRSE_BASE_URL = 'https://api.virse.ai'
 const DEFAULT_VIRSE_RELAY_URL = 'https://www.cxworking.xyz/api/virse'
-const DEFAULT_PLATO_BASE_URL = 'https://api.bltcy.ai'
+const PLATO_MAIN_URL = 'https://api.apilio.ai'
+const PLATO_CN_URL = 'https://apicn.apilio.ai'
+const DEFAULT_PLATO_BASE_URL = PLATO_MAIN_URL
 
 type SettingsSection = 'models' | 'agents' | 'image-host' | 'shortcuts'
 
@@ -63,6 +65,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
   const [imgbbApiKey, setImgbbApiKey] = useState('')
   const [uploadcarePublicKey, setUploadcarePublicKey] = useState('')
   const [freeimageApiKey, setFreeimageApiKey] = useState('')
+  const [imageRelayUrl, setImageRelayUrl] = useState('')
   const [showImgBbKey, setShowImgBbKey] = useState(false)
   const [workspaceId, setWorkspaceId] = useState('')
   const [workspacesList, setWorkspacesList] = useState<Array<{ id: string; name: string }>>([])
@@ -87,10 +90,10 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
 
     if (!initialProfile) {
       setProvider('apilio')
-      setBaseUrl(DEFAULT_PLATO_BASE_URL)
+      setBaseUrl(PLATO_MAIN_URL)
       setVirseRelayUrl(DEFAULT_VIRSE_RELAY_URL)
       setApiKey('')
-      setAgentBaseUrl(DEFAULT_PLATO_BASE_URL)
+      setAgentBaseUrl(PLATO_MAIN_URL)
       setAgentApiKey('')
       setDefaultModelId(DEFAULT_MODEL_ID)
       setModelIdMap({})
@@ -98,6 +101,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
       setImgbbApiKey('')
       setUploadcarePublicKey('')
       setFreeimageApiKey('')
+      setImageRelayUrl('')
       setWorkspaceId('')
       setWorkspacesList([])
       return
@@ -105,10 +109,10 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
 
     const nextProvider = initialProfile.provider || 'apilio'
     let nextBaseUrl = initialProfile.baseUrl
-    if (nextProvider === 'apilio' && (!nextBaseUrl || /api\.apilio\.ai/i.test(nextBaseUrl))) {
-      nextBaseUrl = DEFAULT_PLATO_BASE_URL
+    if (nextProvider === 'apilio') {
+      nextBaseUrl = /apicn\.apilio\.ai/i.test(nextBaseUrl || '') ? PLATO_CN_URL : PLATO_MAIN_URL
     } else if (!nextBaseUrl || /api\.virse\.ai\/mcp/i.test(nextBaseUrl)) {
-      nextBaseUrl = nextProvider === 'virse' ? DEFAULT_VIRSE_BASE_URL : DEFAULT_PLATO_BASE_URL
+      nextBaseUrl = nextProvider === 'virse' ? DEFAULT_VIRSE_BASE_URL : PLATO_MAIN_URL
     }
 
     setProvider(nextProvider)
@@ -122,7 +126,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     setApiKey(initialProfile.apiKey || '')
     setAgentBaseUrl(
       initialProfile.agentBaseUrl
-      || (nextProvider === 'apilio' ? nextBaseUrl : DEFAULT_PLATO_BASE_URL)
+      || (nextProvider === 'apilio' ? nextBaseUrl : PLATO_MAIN_URL)
     )
     setAgentApiKey(
       initialProfile.agentApiKey
@@ -138,6 +142,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     setImgbbApiKey(initialProfile.imgbbApiKey || '')
     setUploadcarePublicKey(initialProfile.uploadcarePublicKey || '')
     setFreeimageApiKey(initialProfile.freeimageApiKey || '')
+    setImageRelayUrl(initialProfile.imageRelayUrl || '')
     setWorkspaceId(initialProfile.workspaceId || '')
     setWorkspacesList([])
   }, [initialProfile, initialSection, isOpen, selectionShortcut])
@@ -155,10 +160,11 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     imgbbApiKey: imgbbApiKey.trim(),
     uploadcarePublicKey: uploadcarePublicKey.trim(),
     freeimageApiKey: freeimageApiKey.trim(),
+    imageRelayUrl: imageRelayUrl.trim() || undefined,
     workspaceId,
     virseRelayUrl: provider === 'virse' ? virseRelayUrl.trim() : undefined,
     modelIdMap: provider === 'virse' ? modelIdMap : undefined,
-    agentBaseUrl: agentBaseUrl.trim() || DEFAULT_PLATO_BASE_URL,
+    agentBaseUrl: agentBaseUrl.trim() || PLATO_MAIN_URL,
     agentApiKey: agentApiKey.trim(),
   })
 
@@ -215,7 +221,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
         : imageHostProvider === 'freeimage'
           ? freeimageApiKey
           : imgbbApiKey
-      await testImageHostConnection(imageHostProvider, currentApiKey)
+      await testImageHostConnection(imageHostProvider, currentApiKey, imageRelayUrl)
       setImgBbTestResult({
         success: true,
         message: imageHostProvider === 'imgbb'
@@ -348,6 +354,35 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                 </select>
               </div>
 
+              {provider === 'apilio' && (
+                <div className="v2-form-group">
+                  <label className="v2-form-label">柏拉图 API 节点</label>
+                  <div className="v2-node-button-group">
+                    <button
+                      type="button"
+                      className={`v2-node-btn ${baseUrl === PLATO_MAIN_URL || !baseUrl || !/apicn/i.test(baseUrl) ? 'active' : ''}`}
+                      onClick={() => {
+                        setBaseUrl(PLATO_MAIN_URL)
+                        setTestResult(null)
+                      }}
+                    >
+                      <span>主站</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`v2-node-btn ${baseUrl === PLATO_CN_URL || /apicn/i.test(baseUrl) ? 'active' : ''}`}
+                      onClick={() => {
+                        setBaseUrl(PLATO_CN_URL)
+                        setTestResult(null)
+                      }}
+                    >
+                      <span>大陆版</span>
+                    </button>
+                  </div>
+                  <span className="v2-form-tip">切换【主站】或【大陆版】节点，无需手动暴露与填写 URL 地址。</span>
+                </div>
+              )}
+
               <div className="v2-form-group">
                 <label className="v2-form-label">API Key (Token)</label>
                 {renderPasswordInput(apiKey, setApiKey, showKey, () => setShowKey(!showKey), '填写 API Key')}
@@ -404,17 +439,29 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
               </div>
 
               <div className="v2-form-group">
-                <label className="v2-form-label">智能体 Base URL</label>
-                <input
-                  className="v2-form-input"
-                  value={agentBaseUrl}
-                  onChange={(event) => {
-                    setAgentBaseUrl(event.target.value)
-                    setAgentTestResult(null)
-                  }}
-                  placeholder={DEFAULT_PLATO_BASE_URL}
-                  spellCheck={false}
-                />
+                <label className="v2-form-label">柏拉图智能体 API 节点</label>
+                <div className="v2-node-button-group">
+                  <button
+                    type="button"
+                    className={`v2-node-btn ${agentBaseUrl === PLATO_MAIN_URL || !agentBaseUrl || !/apicn/i.test(agentBaseUrl) ? 'active' : ''}`}
+                    onClick={() => {
+                      setAgentBaseUrl(PLATO_MAIN_URL)
+                      setAgentTestResult(null)
+                    }}
+                  >
+                    <span>主站</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`v2-node-btn ${agentBaseUrl === PLATO_CN_URL || /apicn/i.test(agentBaseUrl) ? 'active' : ''}`}
+                    onClick={() => {
+                      setAgentBaseUrl(PLATO_CN_URL)
+                      setAgentTestResult(null)
+                    }}
+                  >
+                    <span>大陆版</span>
+                  </button>
+                </div>
               </div>
 
               <div className="v2-form-group">
@@ -589,6 +636,25 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                   获取 {getImageHostDisplayName(imageHostProvider)} {getImageHostCredentialLabel(imageHostProvider)} <span aria-hidden="true">↗</span>
                 </a>
               </div>
+
+              {imageHostProvider !== 'uploadcare' && (
+                <div className="v2-form-group">
+                  <label className="v2-form-label">自定义中转代理域名 (可选)</label>
+                  <input
+                    className="v2-form-input"
+                    value={imageRelayUrl}
+                    onChange={(event) => {
+                      setImageRelayUrl(event.target.value)
+                      setImgBbTestResult(null)
+                    }}
+                    placeholder="https://www.cxworking.xyz (或输入您部署的 Vercel / 个人域名)"
+                    spellCheck={false}
+                  />
+                  <span className="v2-form-tip">
+                    如果您部署了自己的图床代理域名，请在此填写。中转时将自动使用您的域名向 /api/imgbb 和 /api/freeimage 发起上传。
+                  </span>
+                </div>
+              )}
 
               {imgbbTestResult && (
                 <div className={`v2-test-box ${imgbbTestResult.success ? 'success' : 'error'}`}>

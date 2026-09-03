@@ -9,7 +9,7 @@ import { ApiProfile } from '@messages/sender'
 import { composePromptWithRoles } from '../promptComposer'
 import { getImageHostApiKey, getImageHostProvider, uploadToImageHost } from '../../utils/imgbb'
 
-const DEFAULT_PLATO_BASE_URL = 'https://api.bltcy.ai'
+const DEFAULT_PLATO_BASE_URL = 'https://api.apilio.ai'
 const PLATO_MODEL_IDS = [
   'seedream-v5-pro',
   'gpt-image-2',
@@ -106,7 +106,8 @@ export class ApilioAdapter implements ImageProviderAdapter {
             imageHostProvider,
             imageHostApiKey,
             reference.name,
-            signal
+            signal,
+            profile.imageRelayUrl
           )
         }
         referenceUrls.push(imageUrl)
