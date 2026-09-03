@@ -131,6 +131,48 @@ export interface UiPreferences {
   canvasToolbarEnabled?: boolean
 }
 
+export interface WorkspaceDraftReference {
+  id: string
+  role: 'product' | 'model' | 'scene' | 'pose' | 'style' | 'hair' | 'makeup' | 'composition' | 'color' | 'other'
+  source: 'upload' | 'mastergo'
+  anchorNodeId?: string
+  name?: string
+  mimeType: string
+  previewUrl: string
+  strength?: number
+  locked?: boolean
+  instruction?: string
+  width?: number
+  height?: number
+}
+
+/** Current panel inputs restored after the plugin window is reopened. */
+export interface WorkspaceDraft {
+  references: WorkspaceDraftReference[]
+  prompt: string
+  genMode: 'generate' | 'edit' | 'icon'
+  selectedModelId: string
+  resolution: '1K' | '2K' | '4K'
+  aspectRatio: string
+  outputCount: number
+  activeStyleAgentId?: string | null
+  savedAt: number
+}
+
+export type AssetCategory = 'brand' | 'model' | 'outfit'
+
+export interface AssetLibraryItem {
+  id: string
+  category: AssetCategory
+  name: string
+  previewUrl: string
+  mimeType: string
+  width?: number
+  height?: number
+  source: 'generated' | 'canvas' | 'upload'
+  createdAt: number
+}
+
 export enum PluginMessage {
   CONNECTED = 'CONNECTED',
   PONG = 'PONG',
@@ -142,6 +184,8 @@ export enum PluginMessage {
   GENERATION_HISTORY_LOADED = 'GENERATION_HISTORY_LOADED',
   PROMPT_LIBRARY_LOADED = 'PROMPT_LIBRARY_LOADED',
   UI_PREFERENCES_LOADED = 'UI_PREFERENCES_LOADED',
+  WORKSPACE_DRAFT_LOADED = 'WORKSPACE_DRAFT_LOADED',
+  ASSET_LIBRARY_LOADED = 'ASSET_LIBRARY_LOADED',
   ERROR = 'ERROR',
   TOAST = 'TOAST',
   REMOTE_IMAGE_BYTES_LOADED = 'REMOTE_IMAGE_BYTES_LOADED',
@@ -165,6 +209,10 @@ export enum UIMessage {
   GET_REMOTE_IMAGE_BYTES = 'GET_REMOTE_IMAGE_BYTES',
   GET_UI_PREFERENCES = 'GET_UI_PREFERENCES',
   SAVE_UI_PREFERENCES = 'SAVE_UI_PREFERENCES',
+  GET_WORKSPACE_DRAFT = 'GET_WORKSPACE_DRAFT',
+  SAVE_WORKSPACE_DRAFT = 'SAVE_WORKSPACE_DRAFT',
+  GET_ASSET_LIBRARY = 'GET_ASSET_LIBRARY',
+  SAVE_ASSET_LIBRARY = 'SAVE_ASSET_LIBRARY',
 }
 
 export type PluginMessageData =
@@ -178,6 +226,8 @@ export type PluginMessageData =
   | { type: PluginMessage.GENERATION_HISTORY_LOADED; payload: GenerationHistoryItem[] }
   | { type: PluginMessage.PROMPT_LIBRARY_LOADED; payload: PromptLibraryItem[] }
   | { type: PluginMessage.UI_PREFERENCES_LOADED; payload: UiPreferences }
+  | { type: PluginMessage.WORKSPACE_DRAFT_LOADED; payload: WorkspaceDraft | null }
+  | { type: PluginMessage.ASSET_LIBRARY_LOADED; payload: AssetLibraryItem[] }
   | { type: PluginMessage.ERROR; payload: { message: string } }
   | { type: PluginMessage.TOAST; payload: { message: string; messageType?: 'success' | 'error' | 'warning' | 'info' } }
   | { type: PluginMessage.REMOTE_IMAGE_BYTES_LOADED; payload: RemoteImageBytesPayload }
@@ -200,6 +250,10 @@ export type UIMessageData =
   | { type: UIMessage.GET_REMOTE_IMAGE_BYTES; payload: RemoteImageBytesRequestPayload }
   | { type: UIMessage.GET_UI_PREFERENCES }
   | { type: UIMessage.SAVE_UI_PREFERENCES; payload: UiPreferences }
+  | { type: UIMessage.GET_WORKSPACE_DRAFT }
+  | { type: UIMessage.SAVE_WORKSPACE_DRAFT; payload: WorkspaceDraft }
+  | { type: UIMessage.GET_ASSET_LIBRARY }
+  | { type: UIMessage.SAVE_ASSET_LIBRARY; payload: AssetLibraryItem[] }
 
 /**
  * 向 UI 发送消息 (从 Main 调用)

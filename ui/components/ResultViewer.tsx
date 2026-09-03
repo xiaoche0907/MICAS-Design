@@ -5,6 +5,7 @@ interface ResultViewerProps {
   results: GeneratedImage[]
   onInsertToCanvas: (image: GeneratedImage) => void
   onReuseAsReference: (image: GeneratedImage) => void
+  onAddToAssets: (image: GeneratedImage) => void
   onDelete: (image: GeneratedImage) => void
 }
 
@@ -12,6 +13,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({
   results,
   onInsertToCanvas,
   onReuseAsReference,
+  onAddToAssets,
   onDelete,
 }) => {
   const [previewImage, setPreviewImage] = useState<GeneratedImage | null>(null)
@@ -56,6 +58,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({
           <div className="history-result-actions">
             <button onClick={() => downloadImage(image)}>下载 PNG</button>
             <button onClick={() => onReuseAsReference(image)}>设为参考</button>
+            <button onClick={() => onAddToAssets(image)}>加入资产</button>
             <button className="primary" onClick={() => onInsertToCanvas(image)}>插入画布</button>
           </div>
         </article>
@@ -83,6 +86,7 @@ export const ResultViewer: React.FC<ResultViewerProps> = ({
                 删除记录
               </button>
               <button onClick={() => onReuseAsReference(previewImage)}>设为参考图</button>
+              <button onClick={() => onAddToAssets(previewImage)}>加入资产库</button>
               <button
                 className="primary"
                 onClick={() => {

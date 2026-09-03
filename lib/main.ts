@@ -12,6 +12,8 @@ import {
   ExportedImagePayload,
   RemoteImageBytesRequestPayload,
   UiPreferences,
+  WorkspaceDraft,
+  AssetLibraryItem,
 } from '@messages/sender'
 
 // MasterGo supports one plugin UI window, so keep the main panel fixed.
@@ -24,6 +26,8 @@ const CLIENT_STORAGE_KEY = 'micas_api_profile_v1'
 const GENERATION_HISTORY_KEY = 'micas_generation_history_v1'
 const PROMPT_LIBRARY_KEY = 'micas_prompt_library_v1'
 const UI_PREFERENCES_KEY = 'micas_ui_preferences_v1'
+const WORKSPACE_DRAFT_KEY = 'micas_workspace_draft_v1'
+const ASSET_LIBRARY_KEY = 'micas_asset_library_v1'
 const PANEL_SIZE = { width: 420, height: 820 }
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
 // Height includes enough room for MasterGo's native title bar plus the 50px toolbar.
@@ -379,6 +383,61 @@ async function saveUiPreferences(preferences: UiPreferences) {
   }
 }
 
+async function loadWorkspaceDraft() {
+  try {
+    const raw = await mg.clientStorage.getAsync(WORKSPACE_DRAFT_KEY)
+    const draft = raw ? JSON.parse(raw) : null
+    sendMsgToUI({
+      type: PluginMessage.WORKSPACE_DRAFT_LOADED,
+      payload: draft && typeof draft === 'object' ? draft : null,
+    })
+  } catch (err) {
+    console.error('读取工作草稿失败:', err)
+    sendMsgToUI({ type: PluginMessage.WORKSPACE_DRAFT_LOADED, payload: null })
+  }
+}
+
+async function saveWorkspaceDraft(draft: WorkspaceDraft) {
+  try {
+    await mg.clientStorage.setAsync(WORKSPACE_DRAFT_KEY, JSON.stringify(draft || null))
+  } catch (err) {
+    console.error('保存工作草稿失败:', err)
+    sendMsgToUI({
+      type: PluginMessage.TOAST,
+      payload: { message: '当前草稿保存失败，请减少参考图后重试', messageType: 'warning' },
+    })
+  }
+}
+
+async function loadAssetLibrary() {
+  try {
+    const raw = await mg.clientStorage.getAsync(ASSET_LIBRARY_KEY)
+    const assets = raw ? JSON.parse(raw) : []
+    sendMsgToUI({
+      type: PluginMessage.ASSET_LIBRARY_LOADED,
+      payload: Array.isArray(assets) ? assets : [],
+    })
+  } catch (err) {
+    console.error('读取资产库失败:', err)
+    sendMsgToUI({ type: PluginMessage.ASSET_LIBRARY_LOADED, payload: [] })
+  }
+}
+
+async function saveAssetLibrary(assets: AssetLibraryItem[]) {
+  try {
+    await mg.clientStorage.setAsync(
+      ASSET_LIBRARY_KEY,
+      JSON.stringify(Array.isArray(assets) ? assets.slice(0, 200) : [])
+    )
+  } catch (err) {
+    console.error('保存资产库失败:', err)
+    sendMsgToUI({
+      type: PluginMessage.TOAST,
+      payload: { message: '资产库保存失败，请删除部分大图后重试', messageType: 'warning' },
+    })
+  }
+}
+
 function normalizeImageBytes(value: any): Uint8Array {
   if (!value) return new Uint8Array()
   if (value instanceof Uint8Array) return value
@@ -727,6 +786,22 @@ mg.ui.onmessage = (msgReceived: any) => {
       saveUiPreferences(msg.payload)
       break
 
+    case UIMessage.GET_WORKSPACE_DRAFT:
+      loadWorkspaceDraft()
+      break
+
+    case UIMessage.SAVE_WORKSPACE_DRAFT:
+      saveWorkspaceDraft(msg.payload)
+      break
+
+    case UIMessage.GET_ASSET_LIBRARY:
+      loadAssetLibrary()
+      break
+
+    case UIMessage.SAVE_ASSET_LIBRARY:
+      saveAssetLibrary(msg.payload)
+      break
+
     default:
       break
   }
@@ -738,3 +813,5 @@ loadApiProfile()
 loadGenerationHistory()
 loadPromptLibrary()
 loadUiPreferences()
+loadWorkspaceDraft()
+loadAssetLibrary()

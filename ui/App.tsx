@@ -12,6 +12,9 @@ import {
   GenerationHistoryItem,
   PromptLibraryItem,
   UiPreferences,
+  WorkspaceDraft,
+  AssetCategory,
+  AssetLibraryItem,
 } from '@messages/sender'
 import {
   ReferenceImage,
@@ -38,6 +41,7 @@ import { ResultViewer } from './components/ResultViewer'
 import { Toast } from './components/Toast'
 import { OutpaintEditor, OutpaintPayload } from './components/OutpaintEditor'
 import { TryOnEditor, TryOnPayload } from './components/TryOnEditor'
+import { AssetCandidate, AssetCategoryDialog, AssetLibraryPage } from './components/AssetLibraryPage'
 import {
   ImageIcon,
   ScissorsIcon,
@@ -207,14 +211,6 @@ check for product fidelity, MICAS fit, customer age fit, styling-line fit,
 scene practicality, variety and title-at-top before generating.
 `
 
-interface CommunityPreset {
-  id: string
-  title: string
-  category: '摄影' | '产品' | '3D'
-  imgUrl: string
-  prompt: string
-}
-
 interface StyleAgentPreset {
   id: string
   name: string
@@ -318,51 +314,6 @@ const STYLE_AGENT_PRESETS: StyleAgentPreset[] = [
 function composeStyleAgentPrompt(preset: StyleAgentPreset, userPrompt: string): string {
   return `${preset.prompt}\n\n=== CURRENT DIRECT IMAGE GENERATION TASK ===\nThe expert preset is active. ${preset.executionInstruction}\n\n用户本次需求：\n${userPrompt.trim()}`
 }
-
-const COMMUNITY_PRESETS: CommunityPreset[] = [
-  {
-    id: 'p1',
-    title: '人像特写',
-    category: '摄影',
-    imgUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
-    prompt: '高端时尚女性人像特写，眼神凝视镜头，光影对比细腻，8K分辨率',
-  },
-  {
-    id: 'p2',
-    title: '竖屏肖像',
-    category: '摄影',
-    imgUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=400&auto=format&fit=crop&q=80',
-    prompt: '四宫格复古胶片感竖屏肖像，随性自然连拍，温暖色调',
-  },
-  {
-    id: 'p3',
-    title: '室内肖像',
-    category: '摄影',
-    imgUrl: 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?w=400&auto=format&fit=crop&q=80',
-    prompt: '客厅温馨室内肖像，休闲服装，明亮自然采光，居家沉浸感',
-  },
-  {
-    id: 'p4',
-    title: '街拍人像',
-    category: '摄影',
-    imgUrl: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=400&auto=format&fit=crop&q=80',
-    prompt: '城市街头人像街拍，背景带有动态人流动感模糊，商业时尚大片',
-  },
-  {
-    id: 'p5',
-    title: '高端商业产品',
-    category: '产品',
-    imgUrl: 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=400&auto=format&fit=crop&q=80',
-    prompt: '极简高端手表商业摄影，极简底座，柔和演播室环形灯光',
-  },
-  {
-    id: 'p6',
-    title: '赛博 3D 角色',
-    category: '3D',
-    imgUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&auto=format&fit=crop&q=80',
-    prompt: '赛博朋克 3D 渲染，霓虹发光材质，抽象艺术构图',
-  },
-]
 
 /**
  * 高性能 Chunk 分块 Base64 转换算法
@@ -620,9 +571,12 @@ export default function App() {
   // 拖拽高亮状态
   const [isDraggingOver, setIsDraggingOver] = useState<boolean>(false)
 
-  // 社区预设 Modal
-  const [isCommunityOpen, setIsCommunityOpen] = useState<boolean>(false)
-  const [selectedCommCategory, setSelectedCommCategory] = useState<'全部' | '摄影' | '产品' | '3D'>('全部')
+  // 独立资产库页面
+  const [isAssetLibraryOpen, setIsAssetLibraryOpen] = useState(false)
+  const [assetCategory, setAssetCategory] = useState<AssetCategory>('brand')
+  const [assetSearch, setAssetSearch] = useState('')
+  const [assets, setAssets] = useState<AssetLibraryItem[]>([])
+  const [pendingAssetCandidate, setPendingAssetCandidate] = useState<AssetCandidate | null>(null)
 
   // 模式选单
   const [genMode, setGenMode] = useState<'generate' | 'edit' | 'icon'>('generate')
@@ -761,6 +715,9 @@ export default function App() {
   const quickCutoutPreparationTimeoutCancelRef = useRef<(() => void) | null>(null)
   const quickCutoutExportExpiredRef = useRef(false)
   const quickCutoutCancelRequestedRef = useRef(false)
+  const workspaceDraftHydratedRef = useRef(false)
+  const workspaceDraftSaveTimerRef = useRef<number | null>(null)
+  const latestWorkspaceDraftRef = useRef<WorkspaceDraft | null>(null)
 
   const beginAutomaticInsertion = () => {
     automaticInsertionDepthRef.current += 1
@@ -828,6 +785,7 @@ export default function App() {
     imageInsertionRequests.clear()
     if (quickCutoutTimerRef.current !== null) window.clearInterval(quickCutoutTimerRef.current)
     if (quickCutoutStatusTimeoutRef.current !== null) window.clearTimeout(quickCutoutStatusTimeoutRef.current)
+    if (workspaceDraftSaveTimerRef.current !== null) window.clearTimeout(workspaceDraftSaveTimerRef.current)
     quickCutoutPreparationTimeoutCancelRef.current?.()
     quickCutoutPreparationTimeoutCancelRef.current = null
   }, [])
@@ -928,6 +886,43 @@ export default function App() {
           break
         }
 
+        case PluginMessage.WORKSPACE_DRAFT_LOADED: {
+          if (workspaceDraftHydratedRef.current) break
+          const draft = msg.payload
+          if (draft) {
+            const restoredReferences = Array.isArray(draft.references)
+              ? draft.references
+                .filter((reference) => Boolean(reference?.previewUrl && reference?.mimeType))
+                .slice(0, MAX_REFERENCE_IMAGES) as ReferenceImage[]
+              : []
+            setReferences(restoredReferences)
+            setPrompt(typeof draft.prompt === 'string' ? draft.prompt : '')
+            if (draft.genMode === 'generate' || draft.genMode === 'edit' || draft.genMode === 'icon') {
+              setGenMode(draft.genMode)
+            }
+            setSelectedModel(getModelById(draft.selectedModelId || DEFAULT_MODEL_ID))
+            if (draft.resolution === '1K' || draft.resolution === '2K' || draft.resolution === '4K') {
+              setResolution(draft.resolution)
+            }
+            if (typeof draft.aspectRatio === 'string' && draft.aspectRatio) {
+              setAspectRatio(draft.aspectRatio)
+            }
+            if (Number.isFinite(draft.outputCount)) {
+              setOutputCount(Math.max(1, Math.min(4, Math.round(draft.outputCount))))
+            }
+            setActiveStyleAgentId(typeof draft.activeStyleAgentId === 'string' ? draft.activeStyleAgentId : null)
+            if (restoredReferences.length > 0 || (typeof draft.prompt === 'string' && draft.prompt.trim())) {
+              setToast({ message: '已恢复上次未完成的工作草稿', type: 'success' })
+            }
+          }
+          workspaceDraftHydratedRef.current = true
+          break
+        }
+
+        case PluginMessage.ASSET_LIBRARY_LOADED:
+          setAssets(Array.isArray(msg.payload) ? msg.payload.slice(0, 200) : [])
+          break
+
         case PluginMessage.TOAST:
           // The quick-cutout status is shown in the existing toolbar button.
           // A fixed toast covers the compact 50px canvas toolbar.
@@ -954,9 +949,68 @@ export default function App() {
     sendMsgToPlugin({ type: UIMessage.GET_GENERATION_HISTORY })
     sendMsgToPlugin({ type: UIMessage.GET_PROMPT_LIBRARY })
     sendMsgToPlugin({ type: UIMessage.GET_UI_PREFERENCES })
+    sendMsgToPlugin({ type: UIMessage.GET_WORKSPACE_DRAFT })
+    sendMsgToPlugin({ type: UIMessage.GET_ASSET_LIBRARY })
 
     return () => {
       window.removeEventListener('message', handleMessage)
+    }
+  }, [])
+
+  useEffect(() => {
+    const draft: WorkspaceDraft = {
+      references: references.slice(0, MAX_REFERENCE_IMAGES).map((reference) => ({
+        id: reference.id,
+        role: reference.role,
+        source: reference.source,
+        anchorNodeId: reference.anchorNodeId,
+        name: reference.name,
+        mimeType: reference.mimeType,
+        previewUrl: reference.previewUrl,
+        strength: reference.strength,
+        locked: reference.locked,
+        instruction: reference.instruction,
+        width: reference.width,
+        height: reference.height,
+      })),
+      prompt,
+      genMode,
+      selectedModelId: selectedModel.id,
+      resolution,
+      aspectRatio,
+      outputCount,
+      activeStyleAgentId,
+      savedAt: Date.now(),
+    }
+    latestWorkspaceDraftRef.current = draft
+    if (!workspaceDraftHydratedRef.current) return
+    if (workspaceDraftSaveTimerRef.current !== null) window.clearTimeout(workspaceDraftSaveTimerRef.current)
+    workspaceDraftSaveTimerRef.current = window.setTimeout(() => {
+      sendMsgToPlugin({ type: UIMessage.SAVE_WORKSPACE_DRAFT, payload: draft })
+      workspaceDraftSaveTimerRef.current = null
+    }, 250)
+    return () => {
+      if (workspaceDraftSaveTimerRef.current !== null) {
+        window.clearTimeout(workspaceDraftSaveTimerRef.current)
+        workspaceDraftSaveTimerRef.current = null
+      }
+    }
+  }, [references, prompt, genMode, selectedModel.id, resolution, aspectRatio, outputCount, activeStyleAgentId])
+
+  useEffect(() => {
+    const flushWorkspaceDraft = () => {
+      if (!workspaceDraftHydratedRef.current || !latestWorkspaceDraftRef.current) return
+      sendMsgToPlugin({ type: UIMessage.SAVE_WORKSPACE_DRAFT, payload: latestWorkspaceDraftRef.current })
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushWorkspaceDraft()
+    }
+    window.addEventListener('beforeunload', flushWorkspaceDraft)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      flushWorkspaceDraft()
+      window.removeEventListener('beforeunload', flushWorkspaceDraft)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [])
 
@@ -1135,13 +1189,6 @@ export default function App() {
     setDraggedRefIndex(null)
   }
 
-  // 套用社区 Preset 模板
-  const handleSelectPreset = (preset: CommunityPreset) => {
-    setPrompt(preset.prompt)
-    setIsCommunityOpen(false)
-    setToast({ message: `已载入【${preset.title}】灵感提示词！`, type: 'info' })
-  }
-
   // 处理 MasterGo 导出的参考图
   const handleMasterGoImagesExported = async (exportedImages: ExportedImagePayload[]) => {
     const pendingAction = pendingQuickActionRef.current
@@ -1157,6 +1204,25 @@ export default function App() {
         quickCutoutPreparationRef.current = false
         finishQuickCutoutStatus('error', '未读取到选中的图片，请重新选择后重试', 'image-menu')
       }
+      return
+    }
+
+    if (pendingAction?.kind === 'save-asset') {
+      if (exportedImages.length !== 1) {
+        setToast({ message: '每次请选择一张图片加入资产库', type: 'warning' })
+        return
+      }
+      const image = exportedImages[0]
+      setPendingAssetCandidate({
+        name: image.name || `画布素材-${Date.now()}`,
+        previewUrl: uint8ArrayToDataUrl(image.bytes, image.mimeType),
+        mimeType: image.mimeType || 'image/png',
+        width: image.width,
+        height: image.height,
+        source: 'canvas',
+        suggestedCategory: assetCategory,
+      })
+      setToast({ message: '请选择要保存到的资产分类', type: 'info' })
       return
     }
 
@@ -1377,6 +1443,66 @@ export default function App() {
 
   const persistPromptLibrary = (items: PromptLibraryItem[]) => {
     sendMsgToPlugin({ type: UIMessage.SAVE_PROMPT_LIBRARY, payload: items.slice(0, 100) })
+  }
+
+  const persistAssetLibrary = (items: AssetLibraryItem[]) => {
+    sendMsgToPlugin({ type: UIMessage.SAVE_ASSET_LIBRARY, payload: items.slice(0, 200) })
+  }
+
+  const addAssetCandidates = (candidates: AssetCandidate[], category: AssetCategory) => {
+    if (candidates.length === 0) return
+    setAssets((current) => {
+      const existing = new Set(current.map((asset) => `${asset.category}:${asset.previewUrl}`))
+      const additions: AssetLibraryItem[] = []
+      candidates.forEach((candidate, index) => {
+        const key = `${category}:${candidate.previewUrl}`
+        if (existing.has(key)) return
+        additions.push({
+          id: `asset-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+          category,
+          name: candidate.name || `MICAS 资产 ${current.length + additions.length + 1}`,
+          previewUrl: candidate.previewUrl,
+          mimeType: candidate.mimeType || 'image/png',
+          width: candidate.width,
+          height: candidate.height,
+          source: candidate.source,
+          createdAt: Date.now(),
+        })
+        existing.add(key)
+      })
+      if (additions.length === 0) {
+        setToast({ message: '这张图片已经在当前分类中', type: 'info' })
+        return current
+      }
+      const next = [...additions, ...current].slice(0, 200)
+      persistAssetLibrary(next)
+      setToast({ message: `已加入${category === 'brand' ? '品牌素材' : category === 'model' ? '模特库' : '搭配库'}`, type: 'success' })
+      return next
+    })
+    setPendingAssetCandidate(null)
+  }
+
+  const handleAssetFilesSelected = (files: FileList) => {
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'))
+    imageFiles.forEach((file) => {
+      const reader = new FileReader()
+      reader.onload = (event) => {
+        const previewUrl = event.target?.result
+        if (typeof previewUrl !== 'string') return
+        const image = new Image()
+        image.onload = () => addAssetCandidates([{
+          name: file.name,
+          previewUrl,
+          mimeType: file.type || 'image/png',
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+          source: 'upload',
+          suggestedCategory: assetCategory,
+        }], assetCategory)
+        image.src = previewUrl
+      }
+      reader.readAsDataURL(file)
+    })
   }
 
   const handleSavePrompt = () => {
@@ -2093,6 +2219,93 @@ export default function App() {
     await insertGeneratedImages([img])
   }
 
+  const openGeneratedAssetPicker = async (image: GeneratedImage) => {
+    let previewUrl = image.url
+    let mimeType = image.mimeType || 'image/png'
+    try {
+      if (image.bytes?.length) {
+        previewUrl = uint8ArrayToDataUrl(image.bytes, mimeType)
+      } else if (/^https?:/i.test(image.url)) {
+        setToast({ message: '正在归档图片到资产库…', type: 'info' })
+        const remote = await requestRemoteImageBytes(
+          image.url,
+          getImageProxyUrl(apiProfileRef.current?.virseRelayUrl, image.url) || undefined
+        )
+        mimeType = remote.mimeType || mimeType
+        previewUrl = uint8ArrayToDataUrl(remote.bytes, mimeType)
+      }
+    } catch (error) {
+      console.warn('归档生成图片时未能转为本地数据，将保留原地址:', error)
+    }
+    setPendingAssetCandidate({
+      name: `MICAS 搭配-${new Date(image.createdAt).toLocaleDateString('zh-CN')}`,
+      previewUrl,
+      mimeType,
+      width: image.width,
+      height: image.height,
+      source: 'generated',
+      suggestedCategory: 'outfit',
+    })
+  }
+
+  const useAssetAsReference = (asset: AssetLibraryItem) => {
+    if (references.length >= MAX_REFERENCE_IMAGES) {
+      setToast({ message: `参考图已达到 ${MAX_REFERENCE_IMAGES} 张上限`, type: 'warning' })
+      return
+    }
+    const role: ReferenceRole = asset.category === 'model'
+      ? 'model'
+      : asset.category === 'outfit'
+        ? 'style'
+        : 'product'
+    setReferences((current) => [...current, {
+      id: `ref-asset-${asset.id}-${Date.now()}`,
+      role,
+      source: 'upload',
+      name: asset.name,
+      mimeType: asset.mimeType,
+      previewUrl: asset.previewUrl,
+      width: asset.width,
+      height: asset.height,
+    }])
+    setGenMode('edit')
+    setIsAssetLibraryOpen(false)
+    setToast({ message: `已将“${asset.name}”加入参考图`, type: 'success' })
+  }
+
+  const insertAssetToCanvas = async (asset: AssetLibraryItem) => {
+    try {
+      const payload: InsertImagePayload = asset.previewUrl.startsWith('data:')
+        ? {
+          bytes: dataUrlToUint8Array(asset.previewUrl),
+          mimeType: asset.mimeType,
+          width: asset.width,
+          height: asset.height,
+          name: asset.name,
+        }
+        : {
+          sourceUrl: asset.previewUrl,
+          mimeType: asset.mimeType,
+          width: asset.width,
+          height: asset.height,
+          name: asset.name,
+        }
+      await requestImageInsertion(payload)
+      setToast({ message: '资产已插入 MasterGo 画布', type: 'success' })
+    } catch (error: any) {
+      setToast({ message: `资产插入失败：${error?.message || error}`, type: 'error' })
+    }
+  }
+
+  const deleteAsset = (asset: AssetLibraryItem) => {
+    setAssets((current) => {
+      const next = current.filter((item) => item.id !== asset.id)
+      persistAssetLibrary(next)
+      return next
+    })
+    setToast({ message: '资产已删除', type: 'info' })
+  }
+
   const openFullPanel = () => {
     setQuickSelection(null)
     sendMsgToPlugin({ type: UIMessage.SET_UI_MODE, payload: { mode: 'panel' } })
@@ -2144,10 +2357,6 @@ export default function App() {
     })
     setToast({ message: '已删除该条生成记录', type: 'info' })
   }
-
-  const filteredPresets = selectedCommCategory === '全部'
-    ? COMMUNITY_PRESETS
-    : COMMUNITY_PRESETS.filter((p) => p.category === selectedCommCategory)
 
   if (outpaintJobState !== 'idle' && isOutpaintMinimized) {
     const completed = outpaintJobState === 'success'
@@ -2269,6 +2478,29 @@ export default function App() {
     )
   }
 
+  if (isAssetLibraryOpen) {
+    return (
+      <>
+        <AssetLibraryPage
+          assets={assets}
+          activeCategory={assetCategory}
+          search={assetSearch}
+          onBack={() => setIsAssetLibraryOpen(false)}
+          onCategoryChange={(category) => {
+            setAssetCategory(category)
+            setAssetSearch('')
+          }}
+          onSearchChange={setAssetSearch}
+          onFilesSelected={handleAssetFilesSelected}
+          onUseAsset={useAssetAsReference}
+          onInsertAsset={(asset) => void insertAssetToCanvas(asset)}
+          onDeleteAsset={deleteAsset}
+        />
+        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      </>
+    )
+  }
+
   const quickCutoutButtonStatus = formatQuickCutoutButtonStatus(quickCutoutStatus, genTimer)
   const quickImageMenu = quickSelection ? (
       <div className="image-context-menu" role="toolbar" aria-label={`图片快捷操作：${quickSelection.name}`}>
@@ -2288,7 +2520,7 @@ export default function App() {
           ><span><RemoveBackgroundIcon size={15} /></span>{quickCutoutButtonStatus.busy ? '取消抠图' : quickCutoutButtonStatus.label}</button>
           <button onClick={() => runQuickImageAction('try-on')}><span><WardrobeIcon size={15} /></span>万物上身</button>
           <button onClick={() => runQuickImageAction('angles', '基于当前人物或商品生成不同拍摄角度，保持主体、服装与场景一致')}><span><CubeIcon size={15} /></span>多角度</button>
-          <button onClick={() => runQuickImageAction('adjust', '优化选中图片的色彩、光影、对比度与商业质感，保持内容不变')}><span><SlidersIcon size={15} /></span>画面调整</button>
+          <button onClick={() => runQuickImageAction('save-asset')}><span><PlusIcon size={15} /></span>加入资产</button>
           <button className="image-context-panel" onClick={openFullPanel} title="打开 MICAS 主面板"><span><MoreIcon size={16} /></span>主面板</button>
           <button className="image-context-download" onClick={() => runQuickImageAction('download')} title="下载图片" aria-label="下载图片"><span><DownloadIcon size={17} /></span></button>
         </div>
@@ -2442,18 +2674,24 @@ export default function App() {
         </section>
       )}
 
-      {/* 2. Gallery 从预设快速创建卡片 */}
-      <div className="v2-gallery-card" onClick={() => setIsCommunityOpen(true)}>
+      {/* 2. 独立资产库入口 */}
+      <button
+        type="button"
+        className="v2-gallery-card"
+        onClick={() => {
+          setAssetSearch('')
+          setIsHistoryOpen(false)
+          setIsPromptLibraryOpen(false)
+          setIsStyleLibraryOpen(false)
+          setIsAssetLibraryOpen(true)
+        }}
+      >
         <div className="v2-gallery-left">
-          <span className="v2-gallery-script">Micas视觉社区</span>
-          <span className="v2-gallery-sub">从预设快速创建</span>
+          <span className="v2-gallery-script">MICAS 资产库</span>
+          <span className="v2-gallery-sub">品牌 · 模特 · 搭配 {assets.length > 0 ? `· ${assets.length}` : ''}</span>
         </div>
-        <img
-          src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=60"
-          alt="Community Preset Gallery"
-          className="v2-gallery-avatar"
-        />
-      </div>
+        <span className="v2-gallery-avatar v2-asset-entry-icon"><PaletteIcon size={16} /></span>
+      </button>
 
       {/* 3. 虚线参考图框 (支持拖拽文件 / 复制粘贴 / 原生卡片拖拽直接换序) */}
       <div
@@ -2870,6 +3108,7 @@ export default function App() {
               results={results}
               onInsertToCanvas={handleInsertToCanvas}
               onDelete={deleteGenerationHistoryItem}
+              onAddToAssets={(image) => void openGeneratedAssetPicker(image)}
               onReuseAsReference={(img) => {
                 setReferences((prev) => [
                   ...prev,
@@ -2956,49 +3195,12 @@ export default function App() {
         </div>
       )}
 
-      {/* 7. 社区 Modal */}
-      {isCommunityOpen && (
-        <div className="modal-overlay" onClick={() => setIsCommunityOpen(false)}>
-          <div className="v2-community-modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="v2-community-header">
-              <div>
-                <span className="v2-community-title">探索精选预设</span>
-                <span className="v2-community-sublink">获取更多 prompt ↗</span>
-              </div>
-              <button
-                className="modal-close-btn"
-                onClick={() => setIsCommunityOpen(false)}
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="v2-community-tabs">
-              {(['全部', '摄影', '产品', '3D'] as const).map((cat) => (
-                <button
-                  key={cat}
-                  className={`v2-comm-tab-btn ${selectedCommCategory === cat ? 'active' : ''}`}
-                  onClick={() => setSelectedCommCategory(cat)}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
-
-            <div className="v2-community-grid">
-              {filteredPresets.map((preset) => (
-                <div
-                  key={preset.id}
-                  className="v2-comm-card"
-                  onClick={() => handleSelectPreset(preset)}
-                >
-                  <img src={preset.imgUrl} alt={preset.title} className="v2-comm-img" />
-                  <div className="v2-comm-label">{preset.title}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+      {pendingAssetCandidate && (
+        <AssetCategoryDialog
+          candidate={pendingAssetCandidate}
+          onCancel={() => setPendingAssetCandidate(null)}
+          onConfirm={(category) => addAssetCandidates([pendingAssetCandidate], category)}
+        />
       )}
 
       {/* 8. 底部固定生成工具栏 */}

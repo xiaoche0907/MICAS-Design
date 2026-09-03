@@ -50,7 +50,11 @@ export const Toast: React.FC<ToastProps> = ({
   }
 
   return (
-    <div className={`micas-toast micas-toast-${type}`}>
+    <div
+      className={`micas-toast micas-toast-${type}`}
+      role={type === 'error' || type === 'warning' ? 'alert' : 'status'}
+      aria-live={type === 'error' || type === 'warning' ? 'assertive' : 'polite'}
+    >
       <span className="toast-icon-box">{renderIcon()}</span>
       <span className="toast-message">{message}</span>
       <button className="toast-close-btn" onClick={onClose} title="关闭">

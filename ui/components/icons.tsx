@@ -159,6 +159,13 @@ export const DownloadIcon: React.FC<IconProps> = ({ className, size = 16, color 
   </svg>
 )
 
+export const SearchIcon: React.FC<IconProps> = ({ className, size = 16, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20 20-4-4" />
+  </svg>
+)
+
 export const TrashIcon: React.FC<IconProps> = ({ className, size = 16, color = 'currentColor', style }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
     <path d="M3 6h18M8 6V3h8v3M6 6l1 15h10l1-15M10 10v7M14 10v7" />
